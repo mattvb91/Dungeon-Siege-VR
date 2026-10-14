@@ -39,7 +39,7 @@ dsvr detach
 - `version.dll` proxy that forwards all exports to the system DLL and writes `dsvr.log`.
 - **Done when:** game launches normally with our DLL in its folder and the log shows attach + exe version.
 
-### M1 — dgVoodoo2 bridge  (deployed 2026-10-14, awaiting play test)
+### M1 — dgVoodoo2 bridge  ✅ verified 2026-10-14 (watermark visible, gameplay looks and runs normally)
 - dgVoodoo2 v2.87.5 `DDraw.dll`/`D3DImm.dll` + default `dgVoodoo.conf` deployed via `deploy.ps1`.
   Watermark left ON for this test as visual proof dgVoodoo is rendering.
 - **Done when:** watermark visible, and ~5 min of play (a level, combat, spell effects) looks and performs like vanilla.
