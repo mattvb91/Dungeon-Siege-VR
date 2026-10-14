@@ -66,33 +66,44 @@ namespace dsvr
         {
             if (slot.texture)
                 m_retired.push_back({ slot.texture, slot.sharedHandle, pendingValue });
-            slot = Slot();
+            slot = Slot();  // reader detects the generation change and drops its handles
         }
-        m_latest = -1;
-        m_reading = -1;  // reader detects the generation change and drops its handles
         m_texWidth = m_texHeight = 0;
     }
 
     int FrameRing::AcquireWriteSlot()
     {
         std::lock_guard<std::mutex> guard(m_lock);
+        int oldest = -1;
         for (int i = 0; i < kSlots; ++i)
         {
-            if (i != m_latest && i != m_reading && m_slots[i].texture)
+            const Slot& s = m_slots[i];
+            if (!s.texture)
+                continue;
+            if (s.state == Free)
                 return i;
+            if (s.state == Published && (oldest < 0 || s.sequence < m_slots[oldest].sequence))
+                oldest = i;
         }
-        return -1;
+        if (oldest >= 0)
+        {
+            m_slots[oldest].state = Free;
+            ++m_dropped;
+        }
+        return oldest;
     }
 
     void FrameRing::Publish(int slot, ID3D12Fence* fence, UINT64 fenceValue, UINT width, UINT height)
     {
         {
             std::lock_guard<std::mutex> guard(m_lock);
-            m_slots[slot].fenceValue = fenceValue;
-            m_slots[slot].width = width;
-            m_slots[slot].height = height;
+            Slot& s = m_slots[slot];
+            s.fenceValue = fenceValue;
+            s.width = width;
+            s.height = height;
+            s.sequence = ++m_sequence;
+            s.state = Published;
             m_fence = fence;
-            m_latest = slot;
         }
         SetEvent(m_newFrame);
     }
@@ -145,14 +156,23 @@ namespace dsvr
         ++m_generation;
     }
 
-    bool FrameRing::TakeLatest(Frame& frame)
+    bool FrameRing::TakeOldest(Frame& frame)
     {
         std::lock_guard<std::mutex> guard(m_lock);
-        if (m_latest < 0 || !m_fence)
+        if (!m_fence)
             return false;
 
-        const Slot& slot = m_slots[m_latest];
-        frame.slot = m_latest;
+        int oldest = -1;
+        for (int i = 0; i < kSlots; ++i)
+        {
+            if (m_slots[i].state == Published && (oldest < 0 || m_slots[i].sequence < m_slots[oldest].sequence))
+                oldest = i;
+        }
+        if (oldest < 0)
+            return false;
+
+        Slot& slot = m_slots[oldest];
+        frame.slot = oldest;
         frame.generation = m_generation;
         frame.sharedHandle = nullptr;
         if (!DuplicateHandle(GetCurrentProcess(), slot.sharedHandle, GetCurrentProcess(), &frame.sharedHandle, 0, FALSE, DUPLICATE_SAME_ACCESS))
@@ -166,14 +186,15 @@ namespace dsvr
         frame.texHeight = m_texHeight;
         frame.format = m_format;
 
-        m_reading = m_latest;
-        m_latest = -1;
+        slot.state = Reading;
         return true;
     }
 
-    void FrameRing::EndRead()
+    void FrameRing::EndRead(const Frame& frame)
     {
         std::lock_guard<std::mutex> guard(m_lock);
-        m_reading = -1;
+        // Textures recreated meanwhile: the slot was already reset.
+        if (frame.generation == m_generation && m_slots[frame.slot].state == Reading)
+            m_slots[frame.slot].state = Free;
     }
 }

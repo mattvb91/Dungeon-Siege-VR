@@ -14,7 +14,7 @@
 #include "common/config.h"
 #include "common/log.h"
 #include "frame_ring.h"
-#include "vr_overlay.h"
+#include "vr_presenter.h"
 
 namespace
 {
@@ -53,13 +53,17 @@ namespace
             if (!m_vrStarted)
             {
                 Config config(g_module);
-                m_vr.Start(&m_ring, config.Float("Screen", "Width", 3.0f), config.Float("Screen", "Distance", 2.2f));
+                PresenterSettings settings;
+                settings.stereo = config.Bool("Stereo", "Enabled", false);
+                settings.screenWidth = config.Float("Screen", "Width", 3.0f);
+                settings.screenDistance = config.Float("Screen", "Distance", 2.2f);
+                m_vr.Start(&m_ring, settings);
                 m_vrStarted = true;
             }
             return true;
         }
 
-        VrOverlay& Vr() { return m_vr; }
+        VrPresenter& Vr() { return m_vr; }
 
         void Deactivate()
         {
@@ -217,7 +221,7 @@ namespace
         unsigned m_framesCaptured = 0;
 
         FrameRing m_ring;
-        VrOverlay m_vr;
+        VrPresenter m_vr;
     };
 
     // Never deleted: see FrameCapture.
@@ -241,10 +245,15 @@ extern "C" __declspec(dllexport) void AddOnExit()
         g_capture->Deactivate();
 }
 
-// Used by the loader (version.dll) to drive the game camera from the headset. See VrOverlay::GetHeadPosition.
+// Used by the loader (version.dll) to drive the game camera from the headset. See VrPresenter.
 extern "C" __declspec(dllexport) bool DsvrGetHeadPosition(float out[3])
 {
     return g_capture && g_capture->Vr().GetHeadPosition(out);
+}
+
+extern "C" __declspec(dllexport) bool DsvrGetStereoView(unsigned frameId, dsvr::StereoView* out)
+{
+    return g_capture && g_capture->Vr().GetStereoView(frameId, out);
 }
 
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)

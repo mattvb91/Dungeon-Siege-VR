@@ -40,9 +40,11 @@ add_library(dsvr_addon SHARED
     src/addon/addon_main.cpp
     src/addon/frame_ring.cpp
     src/addon/frame_ring.h
-    src/addon/vr_overlay.cpp
-    src/addon/vr_overlay.h
+    src/addon/vr_presenter.cpp
+    src/addon/vr_presenter.h
+    src/common/config.h
     src/common/log.h
+    src/common/stereo_abi.h
 )
 set_target_properties(dsvr_addon PROPERTIES OUTPUT_NAME SampleAddon)
 target_include_directories(dsvr_addon PRIVATE src ${OPENVR_DIR}/headers ${DGVOODOO_API_DIR}/Inc)
