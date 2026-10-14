@@ -15,6 +15,7 @@
 
 #include "common/stereo_abi.h"
 #include "frame_ring.h"
+#include "panel_projection.h"
 
 namespace dsvr
 {
@@ -52,6 +53,12 @@ namespace dsvr
 
         // Stereo: the loader's mouse-driven VR pointer; a dot is drawn there while it is off the panel.
         void SetPointer(float yaw, float pitch, bool visible);
+
+        // The pointer is off the panel, so the game's cursor is parked (kParkX) and must be masked out.
+        bool PointerParked();
+
+        // Stereo: the panel as seen from the left eye of the latest view handed to the game. False until then.
+        bool GetLeftEyePanelProjection(PanelProjection* out);
 
     private:
         static DWORD WINAPI ThreadMain(void* self);
@@ -109,6 +116,7 @@ namespace dsvr
         };
         SRWLOCK m_viewLock = SRWLOCK_INIT;
         IssuedView m_views[kMarkerFrameIds];
+        IssuedView m_lastLeftView;  // most recent left-eye view handed out (frame id unused)
 
         Microsoft::WRL::ComPtr<ID3D11Device1> m_device;
         Microsoft::WRL::ComPtr<ID3D11DeviceContext> m_context;

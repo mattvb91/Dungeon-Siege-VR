@@ -305,6 +305,11 @@ namespace dsvr
             slot.valid = true;
             slot.frameId = frameId;
             slot.view = view;
+            if (view.eye == 0)
+            {
+                m_lastLeftView.valid = true;
+                m_lastLeftView.view = view;
+            }
             ReleaseSRWLockExclusive(&m_viewLock);
             *out = view;
         }
@@ -945,6 +950,60 @@ namespace dsvr
     }
 
     // Draws the VR pointer as a small ring in seated space, slightly in front of the panel distance.
+    bool VrPresenter::PointerParked()
+    {
+        AcquireSRWLockShared(&m_pointerLock);
+        bool parked = m_pointerVisible && GetTickCount() - m_pointerTick < 250;
+        ReleaseSRWLockShared(&m_pointerLock);
+        return parked;
+    }
+
+    bool VrPresenter::GetLeftEyePanelProjection(PanelProjection* out)
+    {
+        AcquireSRWLockShared(&m_viewLock);
+        bool have = m_lastLeftView.valid;
+        StereoView view = m_lastLeftView.view;
+        ReleaseSRWLockShared(&m_viewLock);
+        if (!have)
+            return false;
+
+        // Panel -> seated as in PlacePanel: rotation R = Ry(yaw) * Rx(pitch), centre T = R * (0, 0, -d).
+        float yaw, pitch;
+        GetPanelOrientation(&yaw, &pitch);
+        float sy = std::sin(yaw), cy = std::cos(yaw), sp = std::sin(pitch), cp = std::cos(pitch);
+        float d = m_settings.hudDistance;
+        const float r[3][3] = { { cy, sy * sp, sy * cp }, { 0.0f, cp, -sp }, { -sy, cy * sp, cy * cp } };
+        const float t[3] = { -d * sy * cp, d * sp, -d * cy * cp };
+
+        // Eye -> seated = head pose * eye-to-head; then into panel space with R^T (x - T).
+        float eye[3][4];
+        for (int i = 0; i < 3; ++i)
+        {
+            for (int j = 0; j < 4; ++j)
+            {
+                eye[i][j] = j == 3 ? view.headPose[i][3] : 0.0f;
+                for (int k = 0; k < 3; ++k)
+                    eye[i][j] += view.headPose[i][k] * view.eyeToHead[k][j];
+            }
+        }
+        for (int i = 0; i < 3; ++i)
+        {
+            out->eyeOrigin[i] = 0.0f;
+            for (int k = 0; k < 3; ++k)
+                out->eyeOrigin[i] += r[k][i] * (eye[k][3] - t[k]);
+            for (int j = 0; j < 3; ++j)
+            {
+                out->eyeToPanel[i][j] = 0.0f;
+                for (int k = 0; k < 3; ++k)
+                    out->eyeToPanel[i][j] += r[k][i] * eye[k][j];
+            }
+        }
+        out->tanHalfWidth = view.tanRight;
+        out->tanHalfHeight = view.tanUp;
+        out->panelHalfWidth = 0.5f * m_settings.hudWidth;
+        return true;
+    }
+
     void VrPresenter::UpdatePointerDot()
     {
         AcquireSRWLockShared(&m_pointerLock);
@@ -1077,9 +1136,7 @@ namespace dsvr
             c[5] = 2.5f / float(frame.texHeight);
             c[6] = c[7] = 0.0f;
             // Hide the parked game cursor while the VR pointer is off the panel (empty rect otherwise).
-            AcquireSRWLockShared(&m_pointerLock);
-            bool parked = m_pointerVisible && GetTickCount() - m_pointerTick < 250;
-            ReleaseSRWLockShared(&m_pointerLock);
+            bool parked = PointerParked();
             float su = float(frame.width) / float(frame.texWidth), sv = float(frame.height) / float(frame.texHeight);
             float mask = kParkMaskSize * float(frame.width);
             c[8] = parked ? su * kParkX : 2.0f;

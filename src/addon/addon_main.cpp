@@ -160,8 +160,13 @@ namespace
 
             Capture(adapterID, in);
 
-            // Mono: keep the monitor image as-is (false). Stereo: show only left-eye frames on the monitor.
-            return m_mirrorEnabled && m_mirror.Present(m_root, adapterID, m_swapchainFormat, in, out);
+            // Mono: keep the monitor image as-is (false). Stereo: show left-eye frames with the interface panel
+            // drawn where it appears to the left eye.
+            if (!m_mirrorEnabled)
+                return false;
+            PanelProjection panel;
+            bool havePanel = m_vr.GetLeftEyePanelProjection(&panel);
+            return m_mirror.Present(m_root, adapterID, m_swapchainFormat, m_vr.PointerParked(), havePanel ? &panel : nullptr, in, out);
         }
 
         // Copies the presented image into the frame ring for the VR thread.
