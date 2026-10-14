@@ -63,6 +63,13 @@ namespace dsvr
             return app ? *reinterpret_cast<const int*>(app + offset) : 0;
         }
 
+        void SetAppInt(DWORD offset, int value)
+        {
+            DWORD app = AppModule();
+            if (app)
+                *reinterpret_cast<int*>(app + offset) = value;
+        }
+
         struct V3 { float x, y, z; };
 
         // Rotation Ry(yaw) * Rx(pitch) (OpenVR seated space), applied to v / its transpose applied to v.
@@ -126,14 +133,59 @@ namespace dsvr
 
         bool IsMouseMessage(UINT m) { return m >= WM_MOUSEFIRST && m <= WM_MOUSELAST && m != WM_MOUSEWHEEL; }
 
+        // Reads and re-centres the real mouse; returns its movement since the last call (0 if unfocused).
+        POINT SampleMouse()
+        {
+            POINT moved = { 0, 0 };
+            HWND hwnd = GameWindow();
+            DWORD pid = 0;
+            GetWindowThreadProcessId(GetForegroundWindow(), &pid);
+            if (!hwnd || pid != GetCurrentProcessId())
+                return moved;
+            POINT centre = { g_width / 2, g_height / 2 };
+            ClientToScreen(hwnd, &centre);
+            POINT real;
+            if (g_realGetCursorPos(&real))
+            {
+                moved.x = real.x - centre.x;
+                moved.y = real.y - centre.y;
+                g_realSetCursorPos(centre.x, centre.y);
+            }
+            g_movedX += moved.x;
+            g_movedY += moved.y;
+            return moved;
+        }
+
+        // Called by the game once per frame from its cursor update (0x414675), so the mouse is sampled in
+        // step with the game's own input read.
         BOOL WINAPI HookGetCursorPos(LPPOINT pt)
         {
             if (!Live() || !pt)
                 return g_realGetCursorPos(pt);
-            // Report the point whose offset from the game's anchor is exactly the move that takes the game's
-            // cursor to where the pointer wants it (also correct in absolute mode, where anchor == cursor).
-            POINT p = { g_cursorX + AppInt(kAppAnchorX) - AppInt(kAppCursorX),
-                        g_cursorY + AppInt(kAppAnchorY) - AppInt(kAppCursorY) };
+
+            POINT moved = SampleMouse();
+            POINT p = { AppInt(kAppAnchorX), AppInt(kAppAnchorY) };
+            if (GetAsyncKeyState(VK_MBUTTON) & 0x8000)
+            {
+                // Middle-drag rotates the camera from mouse movement: hand the game the real movement and
+                // keep the pointer (and the game's cursor) where they are.
+                p.x += moved.x;
+                p.y += moved.y;
+            }
+            else
+            {
+                // Move the pointer, then put the game's cursor exactly on its target and report no movement.
+                // (Steering the cursor with movements overshot: the game scales mouse movement, so its cursor
+                // hit the screen edges, where it edge-rotates the camera.)
+                const float kDegToRad = 0.0174532925f;
+                float k = g_settings.degreesPerPixel * kDegToRad;
+                g_yaw -= float(moved.x) * k;
+                g_pitch -= float(moved.y) * k;
+                g_pitch = std::fmax(-kMaxPitch, std::fmin(kMaxPitch, g_pitch));
+                PlaceGameCursor();
+                SetAppInt(kAppCursorX, g_cursorX);
+                SetAppInt(kAppCursorY, g_cursorY);
+            }
             ClientToScreen(GameWindow(), &p);
             *pt = p;
             return TRUE;
@@ -240,26 +292,7 @@ namespace dsvr
             Log("vr pointer: active (game %dx%d)", g_width, g_height);
         }
 
-        // Mouse movement turns the pointer; the real cursor is held at the window centre.
-        DWORD pid = 0;
-        GetWindowThreadProcessId(GetForegroundWindow(), &pid);
-        if (pid == GetCurrentProcessId())
-        {
-            POINT centre = { g_width / 2, g_height / 2 };
-            ClientToScreen(hwnd, &centre);
-            POINT real;
-            if (g_realGetCursorPos(&real))
-            {
-                const float kDegToRad = 0.0174532925f;
-                float k = g_settings.degreesPerPixel * kDegToRad;
-                g_movedX += real.x - centre.x;
-                g_movedY += real.y - centre.y;
-                g_yaw -= float(real.x - centre.x) * k;
-                g_pitch -= float(real.y - centre.y) * k;
-                g_pitch = std::fmax(-kMaxPitch, std::fmin(kMaxPitch, g_pitch));
-                g_realSetCursorPos(centre.x, centre.y);
-            }
-        }
+        // The mouse itself is sampled in HookGetCursorPos; here only the panel may have moved.
         PlaceGameCursor();
 
         // Diagnostic: pointer state every 2 s for the first two minutes of each session.
@@ -267,14 +300,11 @@ namespace dsvr
         if (now - g_lastStateLog >= 2000 && g_stateLogs < 60)
         {
             const float kRadToDeg = 57.2957795f;
-            POINT centre = { g_width / 2, g_height / 2 };
-            ClientToScreen(hwnd, &centre);
-            Log("vr pointer: yaw %.1f pitch %.1f deg, %s, target %d,%d, game cursor %d,%d, mouse moved %ld,%ld, panel yaw %.1f pitch %.1f, "
-                "recentre to screen %ld,%ld, foreground %s",
+            Log("vr pointer: yaw %.1f pitch %.1f deg, %s, target %d,%d, game cursor %d,%d, mouse moved %ld,%ld, "
+                "panel yaw %.1f pitch %.1f, middle button %s",
                 g_yaw * kRadToDeg, g_pitch * kRadToDeg, g_onPanel ? "on panel" : "OFF panel", g_cursorX, g_cursorY,
-                AppInt(kAppCursorX), AppInt(kAppCursorY),
-                g_movedX, g_movedY, g_panelYaw * kRadToDeg, g_panelPitch * kRadToDeg, centre.x, centre.y,
-                pid == GetCurrentProcessId() ? "game" : "other");
+                AppInt(kAppCursorX), AppInt(kAppCursorY), g_movedX, g_movedY,
+                g_panelYaw * kRadToDeg, g_panelPitch * kRadToDeg, (GetAsyncKeyState(VK_MBUTTON) & 0x8000) ? "down" : "up");
             g_movedX = g_movedY = 0;
             g_lastStateLog = now;
             ++g_stateLogs;
