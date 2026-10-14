@@ -163,6 +163,8 @@ namespace dsvr
         unsigned m_monoFrames = 0;
         unsigned m_staleFrames = 0;
         unsigned m_misreadFrames = 0;  // eye-marked frames that were really interface frames
+        unsigned m_unmarkedInPlay = 0; // unmarked frames amid stereo play (skipped)
+        DWORD m_lastMarkedTick = 0;
         char m_lastMarkerCells[96] = {};
         unsigned m_waitErrors = 0;     // diagnostic: WaitGetPoses failures since the last stats line
         int m_lastWaitError = 0;

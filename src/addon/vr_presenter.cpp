@@ -662,6 +662,8 @@ namespace dsvr
         unsigned frameId;
         int eye;
         bool marked = ReadMarker(shared, frame, frameId, eye);
+        if (marked)
+            m_lastMarkedTick = GetTickCount();
         if (marked && eye == kFrameInterface)
         {
             PresentInterface(frame, shared);
@@ -725,6 +727,18 @@ namespace dsvr
             {
                 vr::VROverlay()->HideOverlay(m_overlay);
                 m_showingMenu = false;
+            }
+        }
+        else if (!m_showingMenu && GetTickCount() - m_lastMarkedTick < 250)
+        {
+            // An unmarked frame in the middle of stereo play is a glitch, not a menu: showing it popped up the menu
+            // screen for one frame (user: pink flash with the cursor, offset from the panel's). Skip it; record how
+            // its marker read so the cause can be found.
+            if (m_unmarkedInPlay++ < 5)
+            {
+                Log("unmarked frame during stereo play - skipped; marker cells: %s", m_lastMarkerCells);
+                if (m_unmarkedInPlay == 1)
+                    DumpFrame(shared, frame, "dsvr_unmarked.bmp");
             }
         }
         else
