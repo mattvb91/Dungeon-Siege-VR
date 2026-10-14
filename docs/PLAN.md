@@ -65,7 +65,8 @@ Design (replaces the original "hook Present + Submit per eye" idea):
 - **Done when:** game is playable on the virtual screen in the Index; screen stays put when moving the head.
 
 ### M3 — Head-tracked "tabletop" camera  ✅ v1 verified 2026-10-14 in the Index (works, no jitter; log: `first tracked frame (head -0.047 0.011 -0.046 m, eye offset 0.28 0.06 -0.27)`)
-Open follow-ups: mouse picking and culling still use the unshifted camera; scale/limits not yet configurable.
+✅ Polish verified 2026-10-14: `dsvr.ini` settings, Ctrl+F9 toggle / Ctrl+F10 recentre (seen in log), culling frustum
+call at `0x6619EB` also receives the shifted eye; user reports clicking and edges behave while leaning.
 v1 = head **position** parallax only: the call at `0x661A49` (SiegeCamera → `Rapi::SetViewLookAt`) is
 redirected to `HookSetView` (`src/loader/head_tracking.cpp`), which offsets the eye by the seated-space HMD
 position × 6 in the camera's right/up/forward basis and keeps looking at the target. Main camera only
