@@ -12,6 +12,13 @@ namespace dsvr
     {
         const DWORD kAppModulePtr = 0x0079CF7C;  // RapiAppModule singleton (FuBi accessor 0x4012BF)
         const DWORD kAppWindow    = 0x70;        // HWND used by the cursor update (0x414642: ScreenToClient)
+        // The game runs the mouse in relative mode: each frame (0x414642) it takes GetCursorPos (client
+        // coordinates) minus an anchor as the movement, moves its own cursor by it, and re-centres the OS
+        // cursor with SetCursorPos (0x41592A, 0x416EB4). Its cursor is what it draws and picks with.
+        const DWORD kAppCursorX   = 0x12C;       // AppModule::GetCursorX (0x47DD14)
+        const DWORD kAppCursorY   = 0x130;       // AppModule::GetCursorY (0x47DD28)
+        const DWORD kAppAnchorX   = 0x134;       // client point the movement is measured from
+        const DWORD kAppAnchorY   = 0x138;
         const float kMaxPitch     = 1.48f;       // ~85 degrees
 
         typedef BOOL(WINAPI* GetCursorPosFn)(LPPOINT);
@@ -30,7 +37,7 @@ namespace dsvr
         bool g_onPanel = true;
         float g_yaw = 0.0f, g_pitch = 0.0f;           // pointer, seated space
         float g_panelYaw = 0.0f, g_panelPitch = 0.0f;
-        int g_cursorX = 0, g_cursorY = 0;             // game cursor, game pixels
+        int g_cursorX = 0, g_cursorY = 0;             // where the game's cursor should be, game pixels
         int g_width = 1024, g_height = 768;           // game render size (the image shown on the panel)
         LONG g_movedX = 0, g_movedY = 0;              // diagnostic: real mouse movement since the last log
         DWORD g_lastStateLog = 0;
@@ -40,14 +47,20 @@ namespace dsvr
         // ClientToScreen / mouse messages all work in the game's own resolution even when the real window is
         // larger (log: game 1024x768 in a 3840x2160 client). Window sizes from GetClientRect are NOT in that
         // space (using them sent the cursor off the virtual screen: the camera edge-rotated). So client pixels
-        // are game pixels here.
-        void GameToClient(int gx, int gy, int& cx, int& cy) { cx = gx; cy = gy; }
-        void ClientToGame(int cx, int cy, int& gx, int& gy) { gx = cx; gy = cy; }
+        // are game pixels throughout this file.
+
+        DWORD AppModule() { return *reinterpret_cast<const DWORD*>(kAppModulePtr); }
 
         HWND GameWindow()
         {
-            DWORD app = *reinterpret_cast<const DWORD*>(kAppModulePtr);
+            DWORD app = AppModule();
             return app ? *reinterpret_cast<const HWND*>(app + kAppWindow) : nullptr;
+        }
+
+        int AppInt(DWORD offset)
+        {
+            DWORD app = AppModule();
+            return app ? *reinterpret_cast<const int*>(app + offset) : 0;
         }
 
         struct V3 { float x, y, z; };
@@ -90,20 +103,6 @@ namespace dsvr
             return true;
         }
 
-        // Aims the pointer at a panel pixel (the game moved its cursor).
-        void PointAtPixel(int x, int y)
-        {
-            float halfW = 0.5f * g_settings.panelWidth;
-            float halfH = halfW * float(g_height) / float(g_width);
-            V3 local = { ((float(x) + 0.5f) / float(g_width) * 2.0f - 1.0f) * halfW,
-                         (1.0f - (float(y) + 0.5f) / float(g_height) * 2.0f) * halfH,
-                         -g_settings.panelDistance };
-            V3 d = Rotate(g_panelYaw, g_panelPitch, local);
-            float len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
-            g_yaw = std::atan2(-d.x, -d.z);
-            g_pitch = std::asin(d.y / len);
-        }
-
         void PlaceGameCursor()
         {
             int x, y;
@@ -131,9 +130,10 @@ namespace dsvr
         {
             if (!Live() || !pt)
                 return g_realGetCursorPos(pt);
-            int cx, cy;
-            GameToClient(g_cursorX, g_cursorY, cx, cy);
-            POINT p = { cx, cy };
+            // Report the point whose offset from the game's anchor is exactly the move that takes the game's
+            // cursor to where the pointer wants it (also correct in absolute mode, where anchor == cursor).
+            POINT p = { g_cursorX + AppInt(kAppAnchorX) - AppInt(kAppCursorX),
+                        g_cursorY + AppInt(kAppAnchorY) - AppInt(kAppCursorY) };
             ClientToScreen(GameWindow(), &p);
             *pt = p;
             return TRUE;
@@ -143,26 +143,15 @@ namespace dsvr
         {
             if (!Live())
                 return g_realSetCursorPos(x, y);
-            POINT p = { x, y };
-            ScreenToClient(GameWindow(), &p);
-            int gx, gy;
-            ClientToGame(p.x, p.y, gx, gy);
-            if (gx >= 0 && gy >= 0 && gx < g_width && gy < g_height)
-            {
-                PointAtPixel(gx, gy);
-                PlaceGameCursor();
-            }
+            // The game only re-centres the cursor for its relative mode; we hold the real cursor ourselves
+            // and following these calls snapped the pointer back to the panel centre every frame.
             return TRUE;
         }
 
         void RewriteMouse(LPMSG msg)
         {
             if (Live() && msg && IsMouseMessage(msg->message))
-            {
-                int cx, cy;
-                GameToClient(g_cursorX, g_cursorY, cx, cy);
-                msg->lParam = MAKELPARAM(cx, cy);
-            }
+                msg->lParam = MAKELPARAM(g_cursorX, g_cursorY);
         }
 
         BOOL WINAPI HookPeekMessageA(LPMSG msg, HWND hwnd, UINT first, UINT last, UINT remove)
@@ -280,9 +269,10 @@ namespace dsvr
             const float kRadToDeg = 57.2957795f;
             POINT centre = { g_width / 2, g_height / 2 };
             ClientToScreen(hwnd, &centre);
-            Log("vr pointer: yaw %.1f pitch %.1f deg, %s, game cursor %d,%d, mouse moved %ld,%ld, panel yaw %.1f pitch %.1f, "
+            Log("vr pointer: yaw %.1f pitch %.1f deg, %s, target %d,%d, game cursor %d,%d, mouse moved %ld,%ld, panel yaw %.1f pitch %.1f, "
                 "recentre to screen %ld,%ld, foreground %s",
                 g_yaw * kRadToDeg, g_pitch * kRadToDeg, g_onPanel ? "on panel" : "OFF panel", g_cursorX, g_cursorY,
+                AppInt(kAppCursorX), AppInt(kAppCursorY),
                 g_movedX, g_movedY, g_panelYaw * kRadToDeg, g_panelPitch * kRadToDeg, centre.x, centre.y,
                 pid == GetCurrentProcessId() ? "game" : "other");
             g_movedX = g_movedY = 0;
@@ -302,8 +292,9 @@ namespace dsvr
 
     void GetGameCursor(int* x, int* y, int* width, int* height)
     {
-        *x = g_cursorX;
-        *y = g_cursorY;
+        // The game's own cursor (what it picks with), which follows g_cursorX/Y a frame behind.
+        *x = AppModule() ? AppInt(kAppCursorX) : g_cursorX;
+        *y = AppModule() ? AppInt(kAppCursorY) : g_cursorY;
         *width = g_width;
         *height = g_height;
     }
