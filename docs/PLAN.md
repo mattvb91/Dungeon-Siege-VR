@@ -39,9 +39,16 @@ dsvr detach
 - `version.dll` proxy that forwards all exports to the system DLL and writes `dsvr.log`.
 - **Done when:** game launches normally with our DLL in its folder and the log shows attach + exe version.
 
-### M1 — dgVoodoo2 bridge
-- Drop dgVoodoo2 `DDraw.dll`/`D3DImm.dll` into game dir; configure (D3D11 output, no watermark, windowed).
-- **Done when:** game runs identically on D3D11 (verify with a D3D11 overlay/RenderDoc).
+### M1 — dgVoodoo2 bridge  (deployed 2026-10-14, awaiting play test)
+- dgVoodoo2 v2.87.5 `DDraw.dll`/`D3DImm.dll` + default `dgVoodoo.conf` deployed via `deploy.ps1`.
+  Watermark left ON for this test as visual proof dgVoodoo is rendering.
+- **Done when:** watermark visible, and ~5 min of play (a level, combat, spell effects) looks and performs like vanilla.
+
+### Note for M2 — dgVoodoo add-on API
+The dgVoodoo API SDK ships an official add-on interface (`Inc/Addon/ID3D12Root.hpp`, `ID3D12RootObserver.hpp`,
+sample `D3D12 Addon/Presenter.cpp` that draws over the presented image). This is a supported way to reach
+the final frame without hooking `IDXGISwapChain::Present` ourselves — evaluate it first for M2
+(implies `OutputAPI = d3d12_fl12_0`).
 
 ### M2 — VR "cinema" (mono, big screen)
 - Init OpenVR as `VRApplication_Scene`; hook `IDXGISwapChain::Present` in dgVoodoo's device.
