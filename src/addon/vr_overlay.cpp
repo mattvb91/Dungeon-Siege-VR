@@ -90,8 +90,33 @@ namespace dsvr
         int32_t adapterIndex = -1;
         vr::VRSystem()->GetDXGIOutputInfo(&adapterIndex);
         Log("SteamVR initialised (HMD on DXGI adapter %d)", adapterIndex);
+        AcquireSRWLockExclusive(&m_vrLock);
         m_vrReady = true;
+        ReleaseSRWLockExclusive(&m_vrLock);
         return true;
+    }
+
+    bool VrOverlay::GetHeadPosition(float out[3])
+    {
+        // Rough render-to-photon latency of the game frame being set up.
+        const float kPredictSeconds = 0.03f;
+
+        bool ok = false;
+        AcquireSRWLockShared(&m_vrLock);
+        if (m_vrReady)
+        {
+            vr::TrackedDevicePose_t pose;
+            vr::VRSystem()->GetDeviceToAbsoluteTrackingPose(vr::TrackingUniverseSeated, kPredictSeconds, &pose, 1);
+            if (pose.bPoseIsValid)
+            {
+                out[0] = pose.mDeviceToAbsoluteTracking.m[0][3];
+                out[1] = pose.mDeviceToAbsoluteTracking.m[1][3];
+                out[2] = pose.mDeviceToAbsoluteTracking.m[2][3];
+                ok = true;
+            }
+        }
+        ReleaseSRWLockShared(&m_vrLock);
+        return ok;
     }
 
     void VrOverlay::ShutdownVr()
@@ -103,8 +128,10 @@ namespace dsvr
             vr::VROverlay()->DestroyOverlay(m_overlay);
             m_overlay = vr::k_ulOverlayHandleInvalid;
         }
-        vr::VR_Shutdown();
+        AcquireSRWLockExclusive(&m_vrLock);
         m_vrReady = false;
+        vr::VR_Shutdown();
+        ReleaseSRWLockExclusive(&m_vrLock);
         Log("SteamVR shut down");
     }
 

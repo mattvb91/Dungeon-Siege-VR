@@ -22,6 +22,10 @@ namespace dsvr
         // LUID of the GPU dgVoodoo renders on; our D3D11 device must live on the same one.
         void SetAdapterLuid(LUID luid);
 
+        // HMD position in the seated tracking space (metres, OpenVR axes: +x right, +y up, -z forward),
+        // predicted slightly ahead. Callable from any thread; false if SteamVR or the pose isn't available.
+        bool GetHeadPosition(float out[3]);
+
     private:
         static DWORD WINAPI ThreadMain(void* self);
         [[noreturn]] void Run();
@@ -42,6 +46,7 @@ namespace dsvr
         bool m_hasLuid = false;
         LUID m_deviceLuid = {};
 
+        SRWLOCK m_vrLock = SRWLOCK_INIT;  // exclusive: VR init/shutdown; shared: pose queries
         bool m_vrReady = false;
         DWORD m_nextVrAttempt = 0;
         vr::VROverlayHandle_t m_overlay = vr::k_ulOverlayHandleInvalid;

@@ -64,7 +64,15 @@ Design (replaces the original "hook Present + Submit per eye" idea):
 - Logs: `dsvr_vr.log` in the game folder.
 - **Done when:** game is playable on the virtual screen in the Index; screen stays put when moving the head.
 
-### M3 — Head-tracked "tabletop" camera
+### M3 — Head-tracked "tabletop" camera  (v1 built 2026-10-14, awaiting headset test)
+v1 = head **position** parallax only: the call at `0x661A49` (SiegeCamera → `Rapi::SetViewLookAt`) is
+redirected to `HookSetView` (`src/loader/head_tracking.cpp`), which offsets the eye by the seated-space HMD
+position × 6 in the camera's right/up/forward basis and keeps looking at the target. Main camera only
+(`up == camera+0x160`). Head **rotation** is deliberately ignored: the M2 screen is world-locked, so rotating
+the game camera too would double the rotation. Rotation belongs to M4 (stereo). The pose comes from
+`SampleAddon.dll!DsvrGetHeadPosition`. Culling frustum (0x6799C1) still uses the unmodified eye.
+
+Original M3 notes:
 - Resolve `SiegeEngine` singleton via `?FUBI_GetClassSingleton@SiegeEngine@siege@@...` export.
 - Camera = `*(SiegeEngine + 0x3C)`. Validate field offsets at runtime (FOV `+0x124`, pos `+0x148`, target `+0x154`, up `+0x160`, matrix `+0x178`, quat `+0x19C`).
 - Apply HMD pose relative to the game's orbit camera; set FOV from `IVRSystem::GetProjectionRaw`.

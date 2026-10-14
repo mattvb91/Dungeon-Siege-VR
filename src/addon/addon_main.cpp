@@ -55,6 +55,8 @@ namespace
             return true;
         }
 
+        VrOverlay& Vr() { return m_vr; }
+
         void Deactivate()
         {
             if (!m_host)
@@ -233,6 +235,12 @@ extern "C" __declspec(dllexport) void AddOnExit()
     Log("AddOnExit");
     if (g_capture)
         g_capture->Deactivate();
+}
+
+// Used by the loader (version.dll) to drive the game camera from the headset. See VrOverlay::GetHeadPosition.
+extern "C" __declspec(dllexport) bool DsvrGetHeadPosition(float out[3])
+{
+    return g_capture && g_capture->Vr().GetHeadPosition(out);
 }
 
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)

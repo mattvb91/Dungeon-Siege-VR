@@ -38,7 +38,8 @@ namespace dsvr
         const DWORD kIntervalMs = 2000;
         const int kMaxSamples = 150;  // ~5 minutes
 
-        const int kWatchRounds = 3;
+        // Write-site discovery is done (results in docs/EXE-ANALYSIS.md); set > 0 to re-run it.
+        const int kWatchRounds = 0;
         const DWORD kWatchMs = 8000;
         const DWORD kWatchGapMs = 10000;
 

@@ -8,6 +8,7 @@
 
 #include "common/log.h"
 #include "camera_probe.h"
+#include "head_tracking.h"
 
 // ---------------------------------------------------------------------------
 // version.dll forwarding
@@ -105,7 +106,10 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
             return FALSE;
 
         if (CheckTargetExe())
+        {
+            dsvr::InstallHeadTracking();
             dsvr::StartCameraProbe();
+        }
     }
     else if (reason == DLL_PROCESS_DETACH)
     {

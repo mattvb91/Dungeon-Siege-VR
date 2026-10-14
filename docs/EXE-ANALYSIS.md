@@ -83,7 +83,41 @@ Note: identical-code folding means some exports share an address
 | `GetQuatOrientation` | `8D 81 9C 01 00 00` | Quat at **+0x19C** |
 | `GetMaxAzimuth` / `GetMinAzimuth` / `GetMaxDistance` | `D9 81 ..` | floats at +0x1AC / +0x1B0 / +0x1B4 |
 
-Static only — to be confirmed at runtime in M3.
+### Confirmed at runtime (M3 camera probe, 2026-10-14)
+Field names come from SiegeCamera's persistence function `0x661650` (strings next to each offset):
+
+| Offset | Name | Live behaviour |
+|---|---|---|
+| +0x11C / +0x120 | `m_viewWidth` / `m_viewHeight` | 1.0 / 1.0 (normalised) |
+| +0x124 | `m_fieldOfView` | 1.0472 rad = 60° |
+| +0x128 | `m_CameraPosition` | SiegePos: vector_3 + node guid (+0x134), node-local |
+| +0x138 | `m_TargetPosition` | SiegePos, node guid at +0x144 changes as the party walks |
+| +0x148 / +0x154 | (derived) camera / target world pos | recomputed each frame from the SiegePos fields |
+| +0x160 | `m_UpVector` | always (0,1,0): Y-up |
+| +0x16C | `m_VectorOrientation` | target − camera |
+| +0x178 | `m_MatrixOrientation` | orthonormal; 3rd column = normalised view direction |
+| +0x19C | `m_QuatOrientation` | quaternion of the matrix |
+| +0x1AC / +0x1B0 | `m_maxAzimuth` / `m_minAzimuth` | **degrees**: 85 / 32 (camera tilt limits) |
+| +0x1B4 / +0x1B8 | `m_maxDistance` / `m_minDistance` | 18 / 4 (zoom range; probe saw 3–18) |
+
+Singleton globals (from FuBi accessors `mov eax,[global]; ret`): `SiegeEngine*` `0x7A05FC`,
+`CameraAgent*` `0x7A05BC`, `UICamera*` `0x7A0600`, `RapiAppModule*` `0x79CF7C`.
+
+## Per-frame camera → renderer path
+Found with hardware write-watchpoints (all writes on the main thread), then `dumpbin /DISASM`:
+
+```
+SiegeCamera::0x6617A2 / 0x6617CA  SetPositions(SiegePos cam, SiegePos target) → 0x661806
+SiegeCamera::0x661806             node→world for +0x148/+0x154, look-at → +0x178 matrix, +0x19C quat
+SiegeCamera::0x66192A             per-frame render setup (callers incl. 0x479DF1, 0x665698):
+   ├ 0x6799C1(w,h,fov,near,far,&pos,&matrix)  culling frustum, stored in the camera (ret 1Ch)
+   ├ 0x653229(...)                            Rapi viewport
+   ├ 0x653D06(fov, near, far, ...)            Rapi projection
+   └ call @0x661A49 → 0x653E96(&pos,&target,&up)   Rapi::SetViewLookAt (thiscall, ret 0Ch)
+          └ 0x653858 builds the view matrix at Rapi+0xC88, then
+            IDirect3DDevice7 vtable+0x2C (SetTransform) with state 2 = D3DTRANSFORMSTATE_VIEW
+```
+`engine+0x44` is the Rapi renderer object passed as `this` to the 0x653xxx calls.
 
 ## Config
 Camera tuning is data-driven from `config:camera_settings` (gas): `orbit_degrees_per_second`,
