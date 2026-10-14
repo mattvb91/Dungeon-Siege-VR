@@ -23,6 +23,8 @@ namespace dsvr
         bool stereo = false;
         float screenWidth = 2.0f;     // overlay screen (mono mode, stereo menus), metres: ~44 deg at 2.5 m
         float screenDistance = 2.5f;
+        float hudWidth = 1.6f;        // stereo: head-locked interface panel, metres (~56 deg at 1.5 m)
+        float hudDistance = 1.5f;
     };
 
     class VrPresenter
@@ -37,9 +39,9 @@ namespace dsvr
         // predicted slightly ahead. Callable from any thread; false if SteamVR or the pose isn't available.
         bool GetHeadPosition(float out[3]);
 
-        // Stereo mode: the eye, pose and projection the game should render frame `frameId` with.
-        // Repeated calls with the same id return the same view. Called from the game thread.
-        bool GetStereoView(unsigned frameId, StereoView* out);
+        // Stereo mode: the pose and projection the game should render frame `frameId` with for `eye`.
+        // Repeated calls with the same id and eye return the same view. Called from the game thread.
+        bool GetStereoView(unsigned frameId, int eye, StereoView* out);
 
     private:
         static DWORD WINAPI ThreadMain(void* self);
@@ -59,6 +61,11 @@ namespace dsvr
 
         void PresentMono(FrameRing::Frame& frame);
         void ConsumeStereo(FrameRing::Frame& frame);
+        // Interface frames: key colour -> transparent, shown on the head-locked panel.
+        void PresentInterface(const FrameRing::Frame& frame, ID3D11Texture2D* shared);
+        bool EnsureHudPipeline();
+        bool EnsureHudOverlay();
+        void SetHudVisible(bool visible);
         void SubmitStereo();
         bool ReadMarker(ID3D11Texture2D* source, const FrameRing::Frame& frame, unsigned& frameId, int& eye);
 
@@ -102,6 +109,19 @@ namespace dsvr
         Microsoft::WRL::ComPtr<ID3D11Texture2D> m_eyeTex[2];      // stereo
         Microsoft::WRL::ComPtr<ID3D11Texture2D> m_blackTex;       // stereo: scene behind the menu screen
         bool m_showingMenu = false;                               // stereo: last frame was unmarked (menu)
+
+        // Stereo interface panel.
+        vr::VROverlayHandle_t m_hud = vr::k_ulOverlayHandleInvalid;
+        bool m_hudVisible = false;
+        Microsoft::WRL::ComPtr<ID3D11VertexShader> m_keyVs;
+        Microsoft::WRL::ComPtr<ID3D11PixelShader> m_keyPs;
+        Microsoft::WRL::ComPtr<ID3D11SamplerState> m_pointSampler;
+        Microsoft::WRL::ComPtr<ID3D11Buffer> m_keyConstants;
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_sharedSrv[FrameRing::kSlots];
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> m_hudTex[2];
+        Microsoft::WRL::ComPtr<ID3D11RenderTargetView> m_hudRtv[2];
+        int m_nextHudTex = 0;
+        unsigned m_interfaceFrames = 0;
         bool m_eyeHasFrame[2] = {};
         bool m_eyeHasPose[2] = {};
         vr::HmdMatrix34_t m_eyePose[2];

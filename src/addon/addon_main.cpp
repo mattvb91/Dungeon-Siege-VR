@@ -57,6 +57,8 @@ namespace
                 settings.stereo = config.Bool("Stereo", "Enabled", false);
                 settings.screenWidth = config.Float("Screen", "Width", settings.screenWidth);
                 settings.screenDistance = config.Float("Screen", "Distance", settings.screenDistance);
+                settings.hudWidth = config.Float("Interface", "Width", settings.hudWidth);
+                settings.hudDistance = config.Float("Interface", "Distance", settings.hudDistance);
                 m_vr.Start(&m_ring, settings);
                 m_vrStarted = true;
             }
@@ -251,9 +253,9 @@ extern "C" __declspec(dllexport) bool DsvrGetHeadPosition(float out[3])
     return g_capture && g_capture->Vr().GetHeadPosition(out);
 }
 
-extern "C" __declspec(dllexport) bool DsvrGetStereoView(unsigned frameId, dsvr::StereoView* out)
+extern "C" __declspec(dllexport) bool DsvrGetStereoView(unsigned frameId, int eye, dsvr::StereoView* out)
 {
-    return g_capture && g_capture->Vr().GetStereoView(frameId, out);
+    return g_capture && g_capture->Vr().GetStereoView(frameId, eye, out);
 }
 
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)

@@ -26,6 +26,8 @@ add_library(dsvr_loader SHARED
     src/loader/camera_watch.h
     src/loader/head_tracking.cpp
     src/loader/head_tracking.h
+    src/loader/ui_layer.cpp
+    src/loader/ui_layer.h
     src/loader/version.def
     src/common/config.h
     src/common/log.h
@@ -53,7 +55,7 @@ target_compile_options(dsvr_addon PRIVATE /W4 /permissive-)
 target_link_libraries(dsvr_addon PRIVATE
     ${OPENVR_DIR}/lib/win32/openvr_api.lib
     ${DGVOODOO_API_DIR}/Lib/x86/dgVoodooAddon.lib
-    d3d11 dxgi
+    d3d11 dxgi d3dcompiler
 )
 add_custom_command(TARGET dsvr_addon POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${OPENVR_DIR}/bin/win32/openvr_api.dll $<TARGET_FILE_DIR:dsvr_addon>

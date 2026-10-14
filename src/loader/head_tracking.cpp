@@ -6,6 +6,10 @@
 #include "common/config.h"
 #include "common/log.h"
 #include "common/stereo_abi.h"
+#include "ui_layer.h"
+
+#include <ddraw.h>
+#include <d3d.h>
 
 namespace dsvr
 {
@@ -21,6 +25,10 @@ namespace dsvr
         // Last call of a rendered frame in TattooGame's frame function 0x4799B1, after the UI.
         const DWORD kEndFrameCallSite = 0x0047A0F9; // -> engine 0x662CA5 thiscall(engine; a, b), ret 8 -> Rapi 0x650F13
         const DWORD kEndFrameFunc     = 0x00662CA5;
+        // First interface draw after the 3D world in TattooGame's frame function (game GUI manager
+        // 0x7A0648 -> 0x4C6E46, thiscall(double), ret 8); UIShell::Draw (0x47A08E) and the cursor follow.
+        const DWORD kUiStartCallSite  = 0x00479F27;
+        const DWORD kUiStartFunc      = 0x004C6E46;
         // Main camera fields that game code reads directly, bypassing the frustum: e.g. terrain picking
         // (0x672701) builds the click-to-move ray from m_fieldOfView, the world position and
         // m_MatrixOrientation. See PublishToCamera.
@@ -65,7 +73,8 @@ namespace dsvr
         typedef void(__fastcall* SetViewFn)(void* rapi, void* edx, const Vec3* pos, const Vec3* target, const Vec3* up);
         typedef void(__fastcall* EndFrameFn)(void* engine, void* edx, DWORD a, DWORD b);
         typedef bool(*GetHeadPositionFn)(float out[3]);
-        typedef bool(*GetStereoViewFn)(unsigned frameId, StereoView* out);
+        typedef bool(*GetStereoViewFn)(unsigned frameId, int eye, StereoView* out);
+        typedef void(__fastcall* UiStartFn)(void* self, void* edx, double time);
         typedef HRESULT(__stdcall* DeviceClearFn)(void* device, DWORD count, const LONG* rects, DWORD flags, DWORD color, float z, DWORD stencil);
         typedef HRESULT(__stdcall* DeviceSetTransformFn)(void* device, DWORD state, const float* matrix);
 
@@ -73,6 +82,7 @@ namespace dsvr
         const PerspectiveFn g_originalPerspective = reinterpret_cast<PerspectiveFn>(kPerspFunc);
         const SetViewFn g_originalSetView = reinterpret_cast<SetViewFn>(kSetViewFunc);
         const EndFrameFn g_originalEndFrame = reinterpret_cast<EndFrameFn>(kEndFrameFunc);
+        const UiStartFn g_originalUiStart = reinterpret_cast<UiStartFn>(kUiStartFunc);
 
         // m_fieldOfView is persistent game state (position and orientation are rebuilt from the SiegePos
         // fields every frame), so remember the original while stereo overrides it.
@@ -87,8 +97,11 @@ namespace dsvr
             float minEyeDistance;
             int toggleKey;
             int recenterKey;
+            int interfacePeriod;   // stereo: every Nth frame renders the interface panel (0 = interface in the eyes)
+            float hudFov;          // stereo: horizontal angle the interface panel covers (radians)
         };
         Settings g_settings;
+        UiLayer g_uiLayer;
 
         GetHeadPositionFn g_getHeadPosition = nullptr;
         GetStereoViewFn g_getStereoView = nullptr;
@@ -111,9 +124,33 @@ namespace dsvr
         };
         Pass g_pass = {};
 
-        unsigned g_frameId = 0;        // rendered frames; stereo eye = parity
-        int g_frameEye = -1;           // eye rendered this frame, -1 = none (no marker)
+        unsigned g_frameId = 0;        // rendered frames
+        int g_frameEye = -1;           // FrameKind rendered this frame, -1 = none (no marker)
+        bool g_uiSeparated = false;    // this frame's interface was split off at kUiStartCallSite
+        unsigned g_kindFrameId = ~0u;  // frame id g_frameKind was chosen for
+        int g_frameKind = kFrameLeftEye;
+        unsigned g_kindCounter = 0;
+        int g_lastEye = kFrameRightEye;
         unsigned g_stereoFrames = 0;
+
+        // Eyes alternate; every interfacePeriod-th frame is an interface frame instead.
+        int FrameKindFor(unsigned frameId)
+        {
+            if (g_kindFrameId != frameId)
+            {
+                g_kindFrameId = frameId;
+                if (g_settings.interfacePeriod > 0 && ++g_kindCounter % unsigned(g_settings.interfacePeriod) == 0)
+                {
+                    g_frameKind = kFrameInterface;
+                }
+                else
+                {
+                    g_lastEye ^= 1;
+                    g_frameKind = g_lastEye;
+                }
+            }
+            return g_frameKind;
+        }
 
         DWORD MainCamera()
         {
@@ -231,7 +268,10 @@ namespace dsvr
         // vectors flip z. Head translation is scaled so the world appears 1/scale size ("tabletop").
         bool ComputeStereoEye(const Vec3& pos, const Vec3& target, const Vec3& up, Pass& pass)
         {
-            if (!ConnectAddon() || !g_getStereoView(g_frameId, &pass.view))
+            // Interface frames render the 3D scene too (it gets cleared); use the left eye for them.
+            int kind = FrameKindFor(g_frameId);
+            int eye = kind == kFrameInterface ? kFrameLeftEye : kind;
+            if (!ConnectAddon() || !g_getStereoView(g_frameId, eye, &pass.view))
                 return false;
 
             Vec3 right, camUp, forward;
@@ -393,7 +433,10 @@ namespace dsvr
                     // cropped view.
                     const Vec3* gamePos = g_pass.stereo ? &g_pass.center : &g_pass.eye;
                     g_originalFrustum(camera, edx, width, height, eyeFov, nearZ, farZ, gamePos, shifted);
-                    PublishToCamera(cam, *gamePos, shifted, g_pass.stereo, eyeFov);
+                    // With the interface on its own panel, the cursor is seen on that panel, so the game's
+                    // click ray must span the panel's angle rather than the eye image's.
+                    float publishedFov = (g_pass.stereo && g_settings.interfacePeriod > 0) ? g_settings.hudFov : eyeFov;
+                    PublishToCamera(cam, *gamePos, shifted, g_pass.stereo, publishedFov);
                     return;
                 }
             }
@@ -428,7 +471,7 @@ namespace dsvr
                 g_pass.camera = 0;
                 if (g_pass.stereo)
                 {
-                    g_frameEye = g_pass.view.eye;
+                    g_frameEye = FrameKindFor(g_frameId);
                     g_originalSetView(rapi, edx, &g_pass.eye, &g_pass.target, &g_pass.up);
                 }
                 else
@@ -440,12 +483,35 @@ namespace dsvr
             g_originalSetView(rapi, edx, pos, target, up);
         }
 
+        void __fastcall HookUiStart(void* self, void* edx, double time)
+        {
+            if (g_frameEye >= 0 && g_settings.interfacePeriod > 0)
+            {
+                DWORD engine = *reinterpret_cast<const DWORD*>(kSiegeEnginePtr);
+                DWORD rapi = *reinterpret_cast<const DWORD*>(engine + kEngineRapi);
+                IDirect3DDevice7* device = static_cast<IDirect3DDevice7*>(Device(rapi));
+                if (g_frameEye == kFrameInterface)
+                {
+                    g_uiLayer.ClearToKey(device);
+                    g_uiSeparated = true;
+                }
+                else
+                {
+                    g_uiSeparated = g_uiLayer.SaveWorld(device);
+                }
+            }
+            g_originalUiStart(self, edx, time);
+        }
+
         void __fastcall HookEndFrame(void* engine, void* edx, DWORD a, DWORD b)
         {
             if (g_frameEye >= 0)
             {
                 // Stamp the eye and frame id into the bottom-right corner for the add-on to read back.
                 DWORD rapi = *reinterpret_cast<const DWORD*>(reinterpret_cast<DWORD>(engine) + kEngineRapi);
+                if (g_uiSeparated && g_frameEye != kFrameInterface)
+                    g_uiLayer.RestoreWorld(static_cast<IDirect3DDevice7*>(Device(rapi)));
+                g_uiSeparated = false;
                 LONG w = *reinterpret_cast<const LONG*>(rapi + kRapiWidth);
                 LONG h = *reinterpret_cast<const LONG*>(rapi + kRapiHeight);
                 LONG rect[4] = { w - LONG(kMarkerSize), h - LONG(kMarkerSize), w, h };
@@ -498,6 +564,10 @@ namespace dsvr
         g_settings.minEyeDistance = config.Float("HeadTracking", "MinEyeDistance", 1.5f);
         g_settings.toggleKey      = config.Int("HeadTracking", "ToggleKey", VK_F9);
         g_settings.recenterKey    = config.Int("HeadTracking", "RecenterKey", VK_F10);
+        g_settings.interfacePeriod = config.Int("Interface", "Period", 7);
+        float hudWidth            = config.Float("Interface", "Width", 1.6f);
+        float hudDistance         = config.Float("Interface", "Distance", 1.5f);
+        g_settings.hudFov         = 2.0f * std::atan(0.5f * hudWidth / hudDistance);
 
         // Verify every site before touching any.
         if (!IsCall(kFrustumCallSite, kFrustumFunc) || !IsCall(kPerspCallSite, kPerspFunc) ||
@@ -512,6 +582,14 @@ namespace dsvr
         {
             PatchCall(kPerspCallSite, kPerspFunc, &HookPerspective);
             PatchCall(kEndFrameCallSite, kEndFrameFunc, &HookEndFrame);
+            if (IsCall(kUiStartCallSite, kUiStartFunc))
+                PatchCall(kUiStartCallSite, kUiStartFunc, &HookUiStart);
+            else
+                g_settings.interfacePeriod = 0;
+        }
+        else
+        {
+            g_settings.interfacePeriod = 0;
         }
 
         Log("head tracking: installed (%s, %s, scale %.1f, min eye distance %.1f, keys Ctrl+0x%02X toggle / Ctrl+0x%02X recentre)",

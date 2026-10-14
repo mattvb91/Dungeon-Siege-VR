@@ -1,6 +1,7 @@
 #include "vr_presenter.h"
 
 #include <dxgi1_2.h>
+#include <d3dcompiler.h>
 
 #include <cmath>
 
@@ -168,6 +169,12 @@ namespace dsvr
             vr::VROverlay()->DestroyOverlay(m_overlay);
             m_overlay = vr::k_ulOverlayHandleInvalid;
         }
+        if (m_hud != vr::k_ulOverlayHandleInvalid)
+        {
+            vr::VROverlay()->DestroyOverlay(m_hud);
+            m_hud = vr::k_ulOverlayHandleInvalid;
+            m_hudVisible = false;
+        }
         AcquireSRWLockExclusive(&m_vrLock);
         m_vrReady = false;
         vr::VR_Shutdown();
@@ -220,12 +227,12 @@ namespace dsvr
         return ok;
     }
 
-    bool VrPresenter::GetStereoView(unsigned frameId, StereoView* out)
+    bool VrPresenter::GetStereoView(unsigned frameId, int eye, StereoView* out)
     {
         IssuedView& slot = m_views[frameId % kMarkerFrameIds];
 
         AcquireSRWLockShared(&m_viewLock);
-        bool cached = slot.valid && slot.frameId == frameId;
+        bool cached = slot.valid && slot.frameId == frameId && slot.view.eye == eye;
         if (cached)
             *out = slot.view;
         ReleaseSRWLockShared(&m_viewLock);
@@ -238,7 +245,7 @@ namespace dsvr
         if (m_vrReady && m_settings.stereo)
         {
             vr::IVRSystem* system = vr::VRSystem();
-            view.eye = int(frameId & 1);
+            view.eye = eye & 1;
 
             // This frame is captured, submitted after the next WaitGetPoses, then scanned out.
             float sinceVsync = 0.0f;
@@ -340,6 +347,16 @@ namespace dsvr
         m_eyeHasFrame[0] = m_eyeHasFrame[1] = false;
         m_markerStaging.Reset();
         m_blackTex.Reset();
+        for (auto& v : m_sharedSrv)
+            v.Reset();
+        for (auto& t : m_hudTex)
+            t.Reset();
+        for (auto& v : m_hudRtv)
+            v.Reset();
+        m_keyVs.Reset();
+        m_keyPs.Reset();
+        m_pointSampler.Reset();
+        m_keyConstants.Reset();
         m_generation = ~0u;
         m_copyDone.Reset();
         m_context.Reset();
@@ -382,6 +399,12 @@ namespace dsvr
 
         for (auto& t : m_shared)
             t.Reset();
+        for (auto& v : m_sharedSrv)
+            v.Reset();
+        for (auto& t : m_hudTex)
+            t.Reset();
+        for (auto& v : m_hudRtv)
+            v.Reset();
         for (auto& t : m_overlayTex)
             t.Reset();
         for (auto& t : m_eyeTex)
@@ -414,6 +437,20 @@ namespace dsvr
 
         if (m_settings.stereo)
         {
+            // Interface panel: RGBA with alpha from the key colour.
+            D3D11_TEXTURE2D_DESC hud = desc;
+            hud.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            hud.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+            for (int i = 0; i < 2; ++i)
+            {
+                if (FAILED(m_device->CreateTexture2D(&hud, nullptr, &m_hudTex[i])) ||
+                    FAILED(m_device->CreateRenderTargetView(m_hudTex[i].Get(), nullptr, &m_hudRtv[i])))
+                {
+                    Log("interface texture creation failed");
+                    return false;
+                }
+            }
+
             // Shown in both eyes behind the menu screen.
             if (!m_blackTex)
             {
@@ -552,7 +589,17 @@ namespace dsvr
 
         unsigned frameId;
         int eye;
-        if (ReadMarker(shared, frame, frameId, eye))
+        bool marked = ReadMarker(shared, frame, frameId, eye);
+        if (marked && eye == kFrameInterface)
+        {
+            PresentInterface(frame, shared);
+            if (m_showingMenu)
+            {
+                vr::VROverlay()->HideOverlay(m_overlay);
+                m_showingMenu = false;
+            }
+        }
+        else if (marked)
         {
             // The image fills frame.width x frame.height of the texture and spans the fitted symmetric
             // frustum the loader rendered; crop that to the eye's real frustum.
@@ -599,6 +646,7 @@ namespace dsvr
             // Not rendered by the stereo camera (menus, loading screens): a flat image can't be fused if it
             // fills each eye's (differently aimed) field of view, so show it on the world-fixed screen instead.
             ++m_monoFrames;
+            SetHudVisible(false);
             if (EnsureOverlay())
             {
                 if (!m_showingMenu)
@@ -617,6 +665,162 @@ namespace dsvr
         DWORD start = GetTickCount();
         while (m_context->GetData(m_copyDone.Get(), nullptr, 0, 0) == S_FALSE && GetTickCount() - start < 50)
             SwitchToThread();
+    }
+
+    bool VrPresenter::EnsureHudPipeline()
+    {
+        if (m_keyPs)
+            return true;
+
+        // Full-screen triangle; pixels matching the interface key colour (magenta, see loader/ui_layer.h)
+        // become transparent. The bottom-right corner holds the frame marker, so it is cleared as well.
+        static const char kShader[] =
+            "Texture2D src : register(t0);\n"
+            "SamplerState smp : register(s0);\n"
+            "cbuffer C : register(b0) { float2 uvScale; float2 markerStart; };\n"
+            "struct V { float4 pos : SV_Position; float2 uv : TEXCOORD0; };\n"
+            "V vs(uint id : SV_VertexID) {\n"
+            "  V o; float2 t = float2((id << 1) & 2, id & 2);\n"
+            "  o.pos = float4(t * float2(2, -2) + float2(-1, 1), 0, 1); o.uv = t * uvScale; return o; }\n"
+            "float4 ps(V i) : SV_Target {\n"
+            "  if (i.uv.x >= markerStart.x && i.uv.y >= markerStart.y) return 0;\n"
+            "  float3 c = src.Sample(smp, i.uv).rgb;\n"
+            "  float3 d = abs(c - float3(1, 0, 1));\n"
+            "  if (max(d.r, max(d.g, d.b)) < 0.08) return 0;\n"
+            "  return float4(c, 1); }\n";
+
+        ComPtr<ID3DBlob> vs, ps, errors;
+        HRESULT hr = D3DCompile(kShader, sizeof(kShader) - 1, "dsvr_key", nullptr, nullptr, "vs", "vs_4_0", 0, 0, &vs, &errors);
+        if (SUCCEEDED(hr))
+            hr = D3DCompile(kShader, sizeof(kShader) - 1, "dsvr_key", nullptr, nullptr, "ps", "ps_4_0", 0, 0, &ps, &errors);
+        if (FAILED(hr))
+        {
+            Log("interface shader compile failed: 0x%08lX %s", hr, errors ? static_cast<const char*>(errors->GetBufferPointer()) : "");
+            return false;
+        }
+        if (FAILED(m_device->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(), nullptr, &m_keyVs)) ||
+            FAILED(m_device->CreatePixelShader(ps->GetBufferPointer(), ps->GetBufferSize(), nullptr, &m_keyPs)))
+            return false;
+
+        D3D11_SAMPLER_DESC sd = {};
+        sd.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+        sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sd.MaxLOD = D3D11_FLOAT32_MAX;
+        D3D11_BUFFER_DESC bd = {};
+        bd.ByteWidth = 16;
+        bd.Usage = D3D11_USAGE_DYNAMIC;
+        bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        if (FAILED(m_device->CreateSamplerState(&sd, &m_pointSampler)) || FAILED(m_device->CreateBuffer(&bd, nullptr, &m_keyConstants)))
+        {
+            m_keyPs.Reset();
+            return false;
+        }
+        return true;
+    }
+
+    bool VrPresenter::EnsureHudOverlay()
+    {
+        if (m_hud != vr::k_ulOverlayHandleInvalid)
+            return true;
+        vr::IVROverlay* overlay = vr::VROverlay();
+        vr::EVROverlayError err = overlay->CreateOverlay("dsvr.interface", "Dungeon Siege interface", &m_hud);
+        if (err != vr::VROverlayError_None)
+        {
+            Log("CreateOverlay(interface) failed: %s", overlay->GetOverlayErrorNameFromEnum(err));
+            m_hud = vr::k_ulOverlayHandleInvalid;
+            return false;
+        }
+        // Head-locked: the cursor lives on this panel, so it should stay where the player looks.
+        vr::HmdMatrix34_t transform = { {
+            { 1.0f, 0.0f, 0.0f, 0.0f },
+            { 0.0f, 1.0f, 0.0f, 0.0f },
+            { 0.0f, 0.0f, 1.0f, -m_settings.hudDistance },
+        } };
+        overlay->SetOverlayWidthInMeters(m_hud, m_settings.hudWidth);
+        overlay->SetOverlayTransformTrackedDeviceRelative(m_hud, vr::k_unTrackedDeviceIndex_Hmd, &transform);
+        Log("interface panel created: %.2f m wide at %.2f m, head-locked", m_settings.hudWidth, m_settings.hudDistance);
+        return true;
+    }
+
+    void VrPresenter::SetHudVisible(bool visible)
+    {
+        if (m_hud == vr::k_ulOverlayHandleInvalid || visible == m_hudVisible)
+            return;
+        if (visible)
+            vr::VROverlay()->ShowOverlay(m_hud);
+        else
+            vr::VROverlay()->HideOverlay(m_hud);
+        m_hudVisible = visible;
+    }
+
+    void VrPresenter::PresentInterface(const FrameRing::Frame& frame, ID3D11Texture2D* shared)
+    {
+        if (!EnsureHudPipeline() || !EnsureHudOverlay())
+            return;
+
+        ComPtr<ID3D11ShaderResourceView>& srv = m_sharedSrv[frame.slot];
+        if (!srv)
+        {
+            D3D11_SHADER_RESOURCE_VIEW_DESC vd = {};
+            vd.Format = frame.format;
+            vd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+            vd.Texture2D.MipLevels = 1;
+            HRESULT hr = m_device->CreateShaderResourceView(shared, &vd, &srv);
+            if (FAILED(hr))
+            {
+                Log("interface: CreateShaderResourceView failed: 0x%08lX", hr);
+                return;
+            }
+        }
+
+        int index = m_nextHudTex;
+        m_nextHudTex ^= 1;
+
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        if (SUCCEEDED(m_context->Map(m_keyConstants.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+        {
+            float* c = static_cast<float*>(mapped.pData);
+            c[0] = float(frame.width) / float(frame.texWidth);
+            c[1] = float(frame.height) / float(frame.texHeight);
+            // Marker region: kMarkerSize game pixels, scaled by dgVoodoo's internal resolution (up to ~1%).
+            c[2] = c[0] * 0.99f;
+            c[3] = c[1] * 0.99f;
+            m_context->Unmap(m_keyConstants.Get(), 0);
+        }
+
+        D3D11_VIEWPORT vp = { 0.0f, 0.0f, float(frame.width), float(frame.height), 0.0f, 1.0f };
+        ID3D11RenderTargetView* rtv = m_hudRtv[index].Get();
+        ID3D11ShaderResourceView* srvs[] = { srv.Get() };
+        ID3D11SamplerState* samplers[] = { m_pointSampler.Get() };
+        ID3D11Buffer* constants[] = { m_keyConstants.Get() };
+        m_context->OMSetRenderTargets(1, &rtv, nullptr);
+        m_context->RSSetViewports(1, &vp);
+        m_context->IASetInputLayout(nullptr);
+        m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        m_context->VSSetShader(m_keyVs.Get(), nullptr, 0);
+        m_context->VSSetConstantBuffers(0, 1, constants);
+        m_context->PSSetShader(m_keyPs.Get(), nullptr, 0);
+        m_context->PSSetShaderResources(0, 1, srvs);
+        m_context->PSSetSamplers(0, 1, samplers);
+        m_context->PSSetConstantBuffers(0, 1, constants);
+        m_context->Draw(3, 0);
+        ID3D11ShaderResourceView* noSrv[] = { nullptr };
+        m_context->PSSetShaderResources(0, 1, noSrv);
+        m_context->OMSetRenderTargets(0, nullptr, nullptr);
+        m_context->Flush();  // the compositor reads the texture as soon as it is set
+
+        vr::VRTextureBounds_t bounds = { 0.0f, 0.0f,
+            float(frame.width) / float(frame.texWidth), float(frame.height) / float(frame.texHeight) };
+        vr::Texture_t texture = { m_hudTex[index].Get(), vr::TextureType_DirectX, vr::ColorSpace_Gamma };
+        vr::VROverlay()->SetOverlayTextureBounds(m_hud, &bounds);
+        vr::EVROverlayError err = vr::VROverlay()->SetOverlayTexture(m_hud, &texture);
+        if (err != vr::VROverlayError_None && m_interfaceFrames < 3)
+            Log("SetOverlayTexture(interface) failed: %s", vr::VROverlay()->GetOverlayErrorNameFromEnum(err));
+        SetHudVisible(true);
+
+        if (m_interfaceFrames++ == 0)
+            Log("first interface frame: %ux%u", frame.width, frame.height);
     }
 
     void VrPresenter::SubmitStereo()

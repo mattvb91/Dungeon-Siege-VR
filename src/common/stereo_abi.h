@@ -28,28 +28,41 @@ namespace dsvr
         outHalfHeight = w / aspect;
     }
 
+    // What a stereo-mode game frame contains.
+    enum FrameKind
+    {
+        kFrameLeftEye = 0,
+        kFrameRightEye = 1,
+        kFrameInterface = 2,  // 2D interface over kUiKeyColor (loader/ui_layer.h), shown on a head-locked panel
+    };
+
     // Marker stamped into the bottom-right corner of each stereo frame by the loader and read back by the
-    // add-on after capture, so the eye and pose travel with the image (dgVoodoo may present asynchronously).
-    // Values survive 16-bit (565) back buffers: R is a magic value, G carries 6 bits of frame id, B the eye.
+    // add-on after capture, so the kind and pose travel with the image (dgVoodoo may present asynchronously).
+    // Values survive 16-bit (565) back buffers: R is a magic value, G carries 6 bits of frame id, B the kind.
     const unsigned kMarkerMagicR = 0xA5;
     const unsigned kMarkerFrameIds = 64;
     const unsigned kMarkerSize = 2;  // pixels
 
-    inline unsigned MarkerColor(unsigned frameId, int eye)
+    inline unsigned MarkerColor(unsigned frameId, int kind)
     {
         unsigned g = (frameId % kMarkerFrameIds) << 2;
-        unsigned b = eye ? 0xF8 : 0x00;
+        unsigned b = kind == kFrameRightEye ? 0xF8 : kind == kFrameInterface ? 0x7C : 0x00;
         return 0xFF000000u | (kMarkerMagicR << 16) | (g << 8) | b;  // D3DCOLOR (ARGB)
     }
 
-    inline bool DecodeMarker(unsigned r, unsigned g, unsigned b, unsigned& frameId, int& eye)
+    inline bool DecodeMarker(unsigned r, unsigned g, unsigned b, unsigned& frameId, int& kind)
     {
         if (r < kMarkerMagicR - 6 || r > kMarkerMagicR + 6)
             return false;
-        if (b > 0x40 && b < 0xB8)
-            return false;  // neither eye: not our marker
+        if (b <= 0x30)
+            kind = kFrameLeftEye;
+        else if (b >= 0xC8)
+            kind = kFrameRightEye;
+        else if (b >= 0x5C && b <= 0x9C)
+            kind = kFrameInterface;
+        else
+            return false;  // not our marker
         frameId = (g >> 2) % kMarkerFrameIds;
-        eye = b >= 0xB8 ? 1 : 0;
         return true;
     }
 }
