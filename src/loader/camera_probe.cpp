@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "common/log.h"
+#include "camera_watch.h"
 
 namespace dsvr
 {
@@ -36,6 +37,10 @@ namespace dsvr
 
         const DWORD kIntervalMs = 2000;
         const int kMaxSamples = 150;  // ~5 minutes
+
+        const int kWatchRounds = 3;
+        const DWORD kWatchMs = 8000;
+        const DWORD kWatchGapMs = 10000;
 
         // Copies game memory, tolerating bad pointers (the engine may be mid-construction).
         bool SafeRead(DWORD address, void* out, size_t size)
@@ -96,8 +101,9 @@ namespace dsvr
             LogVec3("matrix row2", cam, kMatrixOrient + 24);
             Log("  quat           (+0x%03lX) % 8.4f % 8.4f % 8.4f % 8.4f", kQuatOrient,
                 F(cam, kQuatOrient), F(cam, kQuatOrient + 4), F(cam, kQuatOrient + 8), F(cam, kQuatOrient + 12));
-            Log("  azimuth min/max %.1f / %.1f deg, max distance %.2f",
-                F(cam, kMinAzimuth) * kRadToDeg, F(cam, kMaxAzimuth) * kRadToDeg, F(cam, kMaxDistance));
+            // Stored in degrees (live values 32 / 85): these are the camera tilt limits.
+            Log("  tilt min/max %.1f / %.1f deg, max distance %.2f",
+                F(cam, kMinAzimuth), F(cam, kMaxAzimuth), F(cam, kMaxDistance));
         }
 
         DWORD WINAPI ProbeThread(void*)
@@ -106,6 +112,8 @@ namespace dsvr
             BYTE cam[kCameraSize];
             BYTE last[kCameraSize] = {};
             int samples = 0;
+            int watchRounds = 0;
+            DWORD lastWatch = GetTickCount() - kWatchGapMs;
 
             while (samples < kMaxSamples)
             {
@@ -122,6 +130,16 @@ namespace dsvr
                 memcpy(last, cam, sizeof(cam));
 
                 LogSample(++samples, engine, camera, cam);
+
+                // Once in-game (target sits on a real terrain node), find who writes the camera.
+                if (watchRounds < kWatchRounds && U(cam, kTargetSiegePos + 12) != 0 &&
+                    GetTickCount() - lastWatch >= kWatchGapMs)
+                {
+                    ++watchRounds;
+                    Log("camera watch round %d of %d", watchRounds, kWatchRounds);
+                    WatchCameraWrites(camera, kWatchMs);
+                    lastWatch = GetTickCount();
+                }
             }
             Log("camera probe finished");
             return 0;

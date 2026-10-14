@@ -22,6 +22,8 @@ add_library(dsvr_loader SHARED
     src/loader/dllmain.cpp
     src/loader/camera_probe.cpp
     src/loader/camera_probe.h
+    src/loader/camera_watch.cpp
+    src/loader/camera_watch.h
     src/loader/version.def
     src/common/log.h
 )
