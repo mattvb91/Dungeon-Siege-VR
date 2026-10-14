@@ -80,10 +80,31 @@ Original M3 notes:
 - Apply HMD pose relative to the game's orbit camera; set FOV from `IVRSystem::GetProjectionRaw`.
 - **Done when:** leaning/turning head moves the camera around the party smoothly with no judder.
 
-### M4 — True stereo
-- Disassemble the Rapi render loop (Ghidra) to find the per-frame scene draw.
-- Intercept view/projection (`IDirect3DDevice7::SetTransform`) and render the scene twice (per-eye view + asymmetric projection), UI once onto a floating panel.
-- **Done when:** correct stereo depth with UI legible, ≥ 90 fps on the target PC.
+### M4 — True stereo  (in progress; `dsvr.ini [Stereo] Enabled=1`)
+Design: **alternate-eye rendering** instead of drawing the scene twice (re-entering the middle of the frame
+function 0x4799B1 was too risky). Even frames render the left eye, odd frames the right; dgVoodoo caps the game
+at 180 fps = 90 per eye. The loader stamps a 2x2 eye/frame-id marker (IDirect3DDevice7::Clear at 0x47A0F9);
+the add-on reads it back and submits each frame to its eye with the head pose it was rendered with.
+Each eye renders a symmetric 4:3 frustum covering its real one and is cropped on submit. Menus (camera target
+on no terrain node) go to the flat overlay screen with a black scene behind.
+
+✅ Verified 2026-10-14 in the Index: world fuses in 3D, head yaw correct, menu flat, **mouse picking (item hover
+and click-to-move) accurate**.
+
+Lessons:
+- Screen-right in the game's world is forward × up (Rapi look-at 0x653858 / 0x43FA4B); up × forward mirrored
+  yaw and swapped the eyes.
+- Flat images (menus, UI) can't fill each eye's frustum: the Index's frusta are skewed outward, so the same
+  pixels land in different directions per eye.
+- The game's fov is horizontal (projection 0x6539DE, aspect w/h from 0x653229).
+- Terrain picking (0x672701) and click-to-move read the camera's own fields (fov +0x124, pos +0x148, matrix
+  +0x178), so the VR view is left in them for the rest of each frame (fov restored when off).
+
+Open:
+- In-game UI is drawn into each eye: too big and cropped differently per eye at the edges. Plan: separate UI
+  frames (3D cleared to a key colour) shown on the overlay screen; eye frames drawn without UI.
+- Render resolution is still the game's 800x600 per eye.
+- **Done when:** correct stereo depth with UI legible, ≥ 90 fps per eye on the target PC.
 
 ### M5 — Controls & polish
 - Index controllers: laser pointer → game cursor; buttons → click/hotkeys via SteamVR Input action manifest.
