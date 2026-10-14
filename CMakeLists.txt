@@ -9,6 +9,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Static CRT so the DLLs have no redistributable dependency.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+# Always emit PDBs and map files so crash offsets from the event log can be resolved.
+add_compile_options(/Zi)
+add_link_options(/DEBUG /OPT:REF /OPT:ICF /MAP)
 
 set(THIRD_PARTY ${CMAKE_SOURCE_DIR}/third_party)
 set(OPENVR_DIR ${THIRD_PARTY}/openvr)

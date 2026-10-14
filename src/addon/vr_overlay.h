@@ -13,18 +13,18 @@
 
 namespace dsvr
 {
+    // The thread runs until process exit (see FrameCapture in addon_main.cpp for why it is never stopped).
     class VrOverlay
     {
     public:
         void Start(FrameRing* ring);
-        void Stop(DWORD timeoutMs);
 
         // LUID of the GPU dgVoodoo renders on; our D3D11 device must live on the same one.
         void SetAdapterLuid(LUID luid);
 
     private:
         static DWORD WINAPI ThreadMain(void* self);
-        void Run();
+        [[noreturn]] void Run();
 
         bool TryInitVr();
         void ShutdownVr();
@@ -36,8 +36,6 @@ namespace dsvr
         void PresentFrame(FrameRing::Frame& frame);
 
         FrameRing* m_ring = nullptr;
-        HANDLE m_thread = nullptr;
-        volatile LONG m_stop = 0;
 
         CRITICAL_SECTION m_luidLock;
         LUID m_luid = {};

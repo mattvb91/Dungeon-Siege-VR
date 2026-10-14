@@ -32,26 +32,35 @@ namespace
         }
     }
 
+    // Lives for the whole process. dgVoodoo activates/deactivates (AddOnInit/AddOnExit) several times,
+    // e.g. when the game probes DirectDraw at startup; each activation only (un)registers the observer.
+    // The VR thread starts once and is never stopped: blocking in AddOnExit is unsafe, and the DLL is
+    // pinned so the thread can outlive dgVoodoo's FreeLibrary.
     class FrameCapture final : public dgVoodoo::ID3D12RootObserver
     {
     public:
-        explicit FrameCapture(dgVoodoo::IAddonMainCallback* host) : m_host(host) {}
-
-        bool Init()
+        bool Activate(dgVoodoo::IAddonMainCallback* host)
         {
-            if (!m_host->RegisterForCallback(IID_D3D12RootObserver, static_cast<dgVoodoo::ID3D12RootObserver*>(this)))
+            if (!host->RegisterForCallback(IID_D3D12RootObserver, static_cast<dgVoodoo::ID3D12RootObserver*>(this)))
             {
                 Log("RegisterForCallback(IID_D3D12RootObserver) failed");
                 return false;
             }
-            m_vr.Start(&m_ring);
+            m_host = host;
+            if (!m_vrStarted)
+            {
+                m_vr.Start(&m_ring);
+                m_vrStarted = true;
+            }
             return true;
         }
 
-        void Exit()
+        void Deactivate()
         {
-            m_vr.Stop(2000);
+            if (!m_host)
+                return;
             m_host->UnregisterForCallback(IID_D3D12RootObserver, static_cast<dgVoodoo::ID3D12RootObserver*>(this));
+            m_host = nullptr;
         }
 
         // --- ID3D12RootObserver ---
@@ -194,7 +203,8 @@ namespace
     private:
         static const UInt32 kNoAdapter = 0xFFFFFFFF;
 
-        dgVoodoo::IAddonMainCallback* m_host;
+        dgVoodoo::IAddonMainCallback* m_host = nullptr;
+        bool m_vrStarted = false;
         ID3D12Root* m_root = nullptr;
         ID3D12Device* m_device = nullptr;
         UInt32 m_adapterID = kNoAdapter;
@@ -204,7 +214,7 @@ namespace
         VrOverlay m_vr;
     };
 
-    HMODULE g_module = nullptr;
+    // Never deleted: see FrameCapture.
     FrameCapture* g_capture = nullptr;
 }
 
@@ -213,35 +223,31 @@ extern "C" __declspec(dllexport) bool AddOnInit(dgVoodoo::IAddonMainCallback* ho
     UInt32 version = host->GetVersion();
     Log("AddOnInit (dgVoodoo version %u.%u%u)", (version >> 8) & 0xF, (version >> 4) & 0xF, version & 0xF);
 
-    g_capture = new FrameCapture(host);
-    if (!g_capture->Init())
-    {
-        delete g_capture;
-        g_capture = nullptr;
-        return false;
-    }
-    return true;
+    if (!g_capture)
+        g_capture = new FrameCapture();
+    return g_capture->Activate(host);
 }
 
 extern "C" __declspec(dllexport) void AddOnExit()
 {
     Log("AddOnExit");
     if (g_capture)
-    {
-        g_capture->Exit();
-        delete g_capture;
-        g_capture = nullptr;
-    }
+        g_capture->Deactivate();
 }
 
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
 {
     if (reason == DLL_PROCESS_ATTACH)
     {
-        g_module = module;
         DisableThreadLibraryCalls(module);
         dsvr::OpenLog(module, "dsvr_vr.log");
         Log("dsvr addon attach");
+
+        // dgVoodoo FreeLibrary's the add-on on every deactivation; our VR thread must survive that.
+        HMODULE pinned;
+        if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                reinterpret_cast<LPCSTR>(&AddOnInit), &pinned))
+            Log("failed to pin module (error %lu)", GetLastError());
     }
     else if (reason == DLL_PROCESS_DETACH)
     {

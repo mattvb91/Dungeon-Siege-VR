@@ -25,22 +25,11 @@ namespace dsvr
         m_ring = ring;
         InitializeCriticalSection(&m_luidLock);
         m_fenceEvent = CreateEventA(nullptr, FALSE, FALSE, nullptr);
-        m_stop = 0;
-        m_thread = CreateThread(nullptr, 0, &VrOverlay::ThreadMain, this, 0, nullptr);
-    }
-
-    void VrOverlay::Stop(DWORD timeoutMs)
-    {
-        if (!m_thread)
-            return;
-        InterlockedExchange(&m_stop, 1);
-        SetEvent(m_ring->NewFrameEvent());
-        if (WaitForSingleObject(m_thread, timeoutMs) != WAIT_OBJECT_0)
-            Log("VR thread did not exit within %lu ms", timeoutMs);
-        CloseHandle(m_thread);
-        m_thread = nullptr;
-        CloseHandle(m_fenceEvent);
-        DeleteCriticalSection(&m_luidLock);
+        HANDLE thread = CreateThread(nullptr, 0, &VrOverlay::ThreadMain, this, 0, nullptr);
+        if (thread)
+            CloseHandle(thread);
+        else
+            Log("CreateThread failed (error %lu)", GetLastError());
     }
 
     void VrOverlay::SetAdapterLuid(LUID luid)
@@ -54,13 +43,12 @@ namespace dsvr
     DWORD WINAPI VrOverlay::ThreadMain(void* self)
     {
         static_cast<VrOverlay*>(self)->Run();
-        return 0;
     }
 
     void VrOverlay::Run()
     {
         Log("VR thread started");
-        while (!m_stop)
+        for (;;)
         {
             if (!m_vrReady && GetTickCount() >= m_nextVrAttempt)
             {
@@ -69,8 +57,6 @@ namespace dsvr
             }
 
             WaitForSingleObject(m_ring->NewFrameEvent(), 100);
-            if (m_stop)
-                break;
 
             if (m_vrReady)
                 PumpVrEvents();
@@ -86,10 +72,6 @@ namespace dsvr
             CloseHandle(frame.sharedHandle);
             frame.fence->Release();
         }
-
-        ShutdownVr();
-        ReleaseD3D11();
-        Log("VR thread stopped after %u frames", m_framesShown);
     }
 
     bool VrOverlay::TryInitVr()
