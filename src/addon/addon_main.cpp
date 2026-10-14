@@ -14,6 +14,7 @@
 #include "common/config.h"
 #include "common/log.h"
 #include "frame_ring.h"
+#include "monitor_mirror.h"
 #include "vr_presenter.h"
 
 namespace
@@ -59,6 +60,7 @@ namespace
                 settings.screenDistance = config.Float("Screen", "Distance", settings.screenDistance);
                 settings.hudWidth = config.Float("Interface", "Width", settings.hudWidth);
                 settings.hudDistance = config.Float("Interface", "Distance", settings.hudDistance);
+                m_mirrorEnabled = settings.stereo;
                 m_vr.Start(&m_ring, settings);
                 m_vrStarted = true;
             }
@@ -103,6 +105,8 @@ namespace
             m_adapterID = adapterID;
             m_device = device;
             m_vr.SetAdapterLuid(luid);
+            if (m_mirrorEnabled && !m_mirror.BeginAdapter(m_root, adapterID))
+                Log("monitor mirror unavailable; the monitor will show every frame");
             return true;
         }
 
@@ -112,6 +116,8 @@ namespace
                 return;
             ID3D12GraphicsCommandListAuto* cmd = m_root->GetGraphicsCommandListAuto(adapterID);
             cmd->AFlush(false);
+            if (m_mirrorEnabled)
+                m_mirror.EndAdapter(m_root, adapterID);
             m_ring.ReleaseAll(cmd->AGetFence(), 1000);
             m_device = nullptr;
             m_adapterID = kNoAdapter;
@@ -125,12 +131,14 @@ namespace
 
         void D3D12SwapchainCreated(UInt32, ID3D12Swapchain*, const ID3D12Root::SwapchainData& data) override
         {
+            m_swapchainFormat = data.format;
             Log("swapchain created: %ldx%ld (presented %ldx%ld), format %d",
                 data.imageSize.cx, data.imageSize.cy, data.imagePresentationSize.cx, data.imagePresentationSize.cy, data.format);
         }
 
         void D3D12SwapchainChanged(UInt32, ID3D12Swapchain*, const ID3D12Root::SwapchainData& data) override
         {
+            m_swapchainFormat = data.format;
             Log("swapchain changed: %ldx%ld (presented %ldx%ld), format %d",
                 data.imageSize.cx, data.imageSize.cy, data.imagePresentationSize.cx, data.imagePresentationSize.cy, data.format);
         }
@@ -142,7 +150,6 @@ namespace
 
         bool D3D12SwapchainPresentBegin(UInt32 adapterID, const PresentBeginContextInput& in, PresentBeginContextOutput& out) override
         {
-            // We never replace dgVoodoo's presentation input; returning false keeps the monitor image as-is.
             out.pOutputTexture = nullptr;
             out.outputTexSRVCPUHandle.ptr = 0;
             out.outputTextureExpectedState = (UINT)-1;
@@ -150,10 +157,19 @@ namespace
             if (adapterID != m_adapterID || !in.pSrcTexture)
                 return false;
 
+            Capture(adapterID, in);
+
+            // Mono: keep the monitor image as-is (false). Stereo: show only left-eye frames on the monitor.
+            return m_mirrorEnabled && m_mirror.Present(m_root, adapterID, m_swapchainFormat, in, out);
+        }
+
+        // Copies the presented image into the frame ring for the VR thread.
+        void Capture(UInt32 adapterID, const PresentBeginContextInput& in)
+        {
             UINT width = UINT(in.srcRect.right - in.srcRect.left);
             UINT height = UINT(in.srcRect.bottom - in.srcRect.top);
             if (width == 0 || height == 0)
-                return false;
+                return;
 
             ID3D12GraphicsCommandListAuto* cmd = m_root->GetGraphicsCommandListAuto(adapterID);
             ID3D12Fence* fence = cmd->AGetFence();
@@ -161,11 +177,11 @@ namespace
 
             D3D12_RESOURCE_DESC srcDesc = in.pSrcTexture->GetDesc();
             if (!m_ring.EnsureTextures(m_device, width, height, TypedFormat(srcDesc.Format), fence, cmd->GetFenceValue()))
-                return false;
+                return;
 
             int slot = m_ring.AcquireWriteSlot();
             if (slot < 0)
-                return false;
+                return;
 
             cmd->ChangeId(this);
             cmd->AFlushLock();
@@ -207,7 +223,6 @@ namespace
 
             if (m_framesCaptured++ == 0)
                 Log("first frame captured: %ux%u, source format %d, state 0x%X", width, height, srcDesc.Format, in.srcTextureState);
-            return false;
         }
 
         void D3D12SwapchainPresentEnd(UInt32, const PresentEndContextInput&) override {}
@@ -221,9 +236,12 @@ namespace
         ID3D12Device* m_device = nullptr;
         UInt32 m_adapterID = kNoAdapter;
         unsigned m_framesCaptured = 0;
+        DXGI_FORMAT m_swapchainFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+        bool m_mirrorEnabled = false;
 
         FrameRing m_ring;
         VrPresenter m_vr;
+        MonitorMirror m_mirror;
     };
 
     // Never deleted: see FrameCapture.

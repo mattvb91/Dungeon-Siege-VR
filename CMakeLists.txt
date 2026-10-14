@@ -42,6 +42,8 @@ add_library(dsvr_addon SHARED
     src/addon/addon_main.cpp
     src/addon/frame_ring.cpp
     src/addon/frame_ring.h
+    src/addon/monitor_mirror.cpp
+    src/addon/monitor_mirror.h
     src/addon/vr_presenter.cpp
     src/addon/vr_presenter.h
     src/common/config.h
