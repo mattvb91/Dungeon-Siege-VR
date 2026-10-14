@@ -101,6 +101,13 @@ namespace dsvr
             g_sensitivityNeutral = false;
         }
 
+        void SetAppInt(DWORD offset, int value)
+        {
+            DWORD app = AppModule();
+            if (app)
+                *reinterpret_cast<int*>(app + offset) = value;
+        }
+
         struct V3 { float x, y, z; };
 
         // Rotation Ry(yaw) * Rx(pitch) (OpenVR seated space), applied to v / its transpose applied to v.
@@ -198,7 +205,14 @@ namespace dsvr
             }
 
             POINT moved = SampleMouse();
-            POINT p = { AppInt(kAppAnchorX), AppInt(kAppAnchorY) };
+            // The cursor update (0x41469C) measures movement from the anchor in relative mode but from the
+            // cursor itself in absolute mode (the menu uses one, gameplay the other). With the anchor set to the
+            // cursor, "cursor + movement" means the same in both. (Using only the anchor made the in-game
+            // cursor jump by the anchor/cursor gap every frame and wrap round the screen edges.)
+            int cursorX = AppInt(kAppCursorX), cursorY = AppInt(kAppCursorY);
+            SetAppInt(kAppAnchorX, cursorX);
+            SetAppInt(kAppAnchorY, cursorY);
+            POINT p = { cursorX, cursorY };
             if (GetAsyncKeyState(VK_MBUTTON) & 0x8000)
             {
                 // Middle-drag rotates the camera from mouse movement: hand the game the real movement at the
@@ -209,11 +223,10 @@ namespace dsvr
             }
             else
             {
-                // Move the pointer, then report exactly the movement that takes the game's cursor onto its
-                // target. With sensitivity 1 the game moves its cursor by that much and emits it as input
-                // events, so the interface's hover and clicks follow. (Writing the cursor directly with zero
-                // movement left UIShell's mouse behind: interface clicks failed. Reporting corrective movement
-                // at the player's sensitivity overshot into the screen edges: edge rotation.)
+                // Move the pointer, then report the position that moves the game's cursor exactly onto its
+                // target. The game emits that movement as input events, so the interface's hover and clicks
+                // follow (writing the cursor directly with zero movement left UIShell's mouse behind).
+                // Sensitivity is held at 1 (its default) in case the player changed it in the options.
                 const float kDegToRad = 0.0174532925f;
                 float k = g_settings.degreesPerPixel * kDegToRad;
                 g_yaw -= float(moved.x) * k;
@@ -221,8 +234,8 @@ namespace dsvr
                 g_pitch = std::fmax(-kMaxPitch, std::fmin(kMaxPitch, g_pitch));
                 PlaceGameCursor();
                 NeutralSensitivity();
-                p.x += g_cursorX - AppInt(kAppCursorX);
-                p.y += g_cursorY - AppInt(kAppCursorY);
+                p.x = g_cursorX;
+                p.y = g_cursorY;
             }
             ClientToScreen(GameWindow(), &p);
             *pt = p;
