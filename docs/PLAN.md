@@ -44,7 +44,10 @@ dsvr detach
   Watermark left ON for this test as visual proof dgVoodoo is rendering.
 - **Done when:** watermark visible, and ~5 min of play (a level, combat, spell effects) looks and performs like vanilla.
 
-### M2 — VR "cinema" (mono, big screen)  (built + deployed 2026-10-14, awaiting headset test)
+### M2 — VR "cinema" (mono, big screen)  ✅ verified 2026-10-14 in the Index (log: `first frame on overlay (800x600)`; survives 640x480/1024x768 mode switches)
+Lessons: dgVoodoo FreeLibrary's the add-on on every deactivation (game probes DirectDraw at startup) → DLL is pinned
+and the VR thread is process-lifetime. D3D11 can only open D3D12 shared textures with `ALLOW_RENDER_TARGET`
+(`tools/sharetest`). Launching via Steam also shows Steam's own Desktop Game Theatre — test by running the exe directly.
 Design (replaces the original "hook Present + Submit per eye" idea):
 - **Frame capture via dgVoodoo's official add-on API.** dgVoodoo 2.87 loads an add-on only if it is named
   `SampleAddon.dll` (exports `AddOnInit`/`AddOnExit` — note capital O, the docs say `AddonInit`), and only with
