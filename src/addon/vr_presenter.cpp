@@ -569,6 +569,36 @@ namespace dsvr
             Log("first frame on overlay (%ux%u)", frame.width, frame.height);
     }
 
+    // An interface frame is mostly the magenta key (loader/ui_layer.h); world frames practically never are.
+    // Samples five points away from the interface's usual places (bars, portraits, corners).
+    bool VrPresenter::LooksLikeInterface(ID3D11Texture2D* source, const FrameRing::Frame& frame)
+    {
+        if (!m_markerStaging || frame.width < 16 || frame.height < 16)
+            return false;
+        const float spots[5][2] = { { 0.5f, 0.5f }, { 0.3f, 0.4f }, { 0.7f, 0.4f }, { 0.4f, 0.65f }, { 0.6f, 0.65f } };
+        for (int i = 0; i < 5; ++i)
+        {
+            UINT x = UINT(spots[i][0] * frame.width), y = UINT(spots[i][1] * frame.height);
+            D3D11_BOX box = { x, y, 0, x + 1, y + 1, 1 };
+            m_context->CopySubresourceRegion(m_markerStaging.Get(), 0, UINT(i), 0, 0, source, 0, &box);
+        }
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        if (FAILED(m_context->Map(m_markerStaging.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
+            return false;
+        bool bgra = frame.format == DXGI_FORMAT_B8G8R8A8_UNORM || frame.format == DXGI_FORMAT_B8G8R8X8_UNORM ||
+                    frame.format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+        int magenta = 0;
+        for (int i = 0; i < 5; ++i)
+        {
+            const BYTE* p = static_cast<const BYTE*>(mapped.pData) + i * 4;
+            int r = bgra ? p[2] : p[0], g = p[1], b = bgra ? p[0] : p[2];
+            if (g < 30 && r > 128 && b > 128 && std::abs(r - b) < 26)
+                ++magenta;
+        }
+        m_context->Unmap(m_markerStaging.Get(), 0);
+        return magenta >= 3;
+    }
+
     bool VrPresenter::ReadMarker(ID3D11Texture2D* source, const FrameRing::Frame& frame, unsigned& frameId, int& eye)
     {
         // Cells are 1/256 of the image width (see stereo_abi.h); copy the bottom-right strip holding them.
@@ -616,6 +646,8 @@ namespace dsvr
             }
         }
         m_context->Unmap(m_markerStaging.Get(), 0);
+        sprintf_s(m_lastMarkerCells, "%u,%u,%u %u,%u,%u %u,%u,%u %u,%u,%u", rgb[0][0], rgb[0][1], rgb[0][2],
+            rgb[1][0], rgb[1][1], rgb[1][2], rgb[2][0], rgb[2][1], rgb[2][2], rgb[3][0], rgb[3][1], rgb[3][2]);
         return known && DecodeMarker(rgb, frameId, eye);
     }
 
@@ -637,6 +669,18 @@ namespace dsvr
             {
                 vr::VROverlay()->HideOverlay(m_overlay);
                 m_showingMenu = false;
+            }
+        }
+        else if (marked && LooksLikeInterface(shared, frame))
+        {
+            // Marked as an eye but it is an interface frame (user saw a one-frame pink flash with the cursor in
+            // the headset). Don't show it; record how its marker read so the cause can be found.
+            if (m_misreadFrames++ < 5)
+            {
+                Log("frame marked as eye %d (id %u) looks like an interface frame - skipped; marker cells: %s",
+                    eye, frameId, m_lastMarkerCells);
+                if (m_misreadFrames == 1)
+                    DumpFrame(shared, frame, "dsvr_bad_eye.bmp");
             }
         }
         else if (marked)

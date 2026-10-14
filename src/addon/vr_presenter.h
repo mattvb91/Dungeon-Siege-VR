@@ -82,6 +82,7 @@ namespace dsvr
         void DumpFrame(ID3D11Texture2D* source, const FrameRing::Frame& frame, const char* fileName);
         void SubmitStereo();
         bool ReadMarker(ID3D11Texture2D* source, const FrameRing::Frame& frame, unsigned& frameId, int& eye);
+        bool LooksLikeInterface(ID3D11Texture2D* source, const FrameRing::Frame& frame);
 
         FrameRing* m_ring = nullptr;
         PresenterSettings m_settings;
@@ -161,6 +162,8 @@ namespace dsvr
         unsigned m_stereoFrames = 0;
         unsigned m_monoFrames = 0;
         unsigned m_staleFrames = 0;
+        unsigned m_misreadFrames = 0;  // eye-marked frames that were really interface frames
+        char m_lastMarkerCells[96] = {};
         unsigned m_waitErrors = 0;     // diagnostic: WaitGetPoses failures since the last stats line
         int m_lastWaitError = 0;
         DWORD m_lastStatsLog = 0;
