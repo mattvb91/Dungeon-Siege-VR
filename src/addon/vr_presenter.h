@@ -98,6 +98,8 @@ namespace dsvr
         Microsoft::WRL::ComPtr<ID3D11Texture2D> m_overlayTex[2];  // mono
         int m_nextOverlayTex = 0;
         Microsoft::WRL::ComPtr<ID3D11Texture2D> m_eyeTex[2];      // stereo
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> m_blackTex;       // stereo: scene behind the menu screen
+        bool m_showingMenu = false;                               // stereo: last frame was unmarked (menu)
         bool m_eyeHasFrame[2] = {};
         bool m_eyeHasPose[2] = {};
         vr::HmdMatrix34_t m_eyePose[2];

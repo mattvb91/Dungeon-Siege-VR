@@ -166,6 +166,7 @@ namespace dsvr
             v.valid = false;
         ReleaseSRWLockExclusive(&m_viewLock);
         m_eyeHasFrame[0] = m_eyeHasFrame[1] = false;
+        m_showingMenu = false;
         Log("SteamVR shut down");
     }
 
@@ -328,6 +329,7 @@ namespace dsvr
             t.Reset();
         m_eyeHasFrame[0] = m_eyeHasFrame[1] = false;
         m_markerStaging.Reset();
+        m_blackTex.Reset();
         m_generation = ~0u;
         m_copyDone.Reset();
         m_context.Reset();
@@ -387,10 +389,12 @@ namespace dsvr
         desc.Usage = D3D11_USAGE_DEFAULT;
         desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 
-        ComPtr<ID3D11Texture2D>* targets = m_settings.stereo ? m_eyeTex : m_overlayTex;
+        // Overlay textures are needed in both modes: stereo shows menus on the overlay screen too.
         for (int i = 0; i < 2; ++i)
         {
-            HRESULT hr = m_device->CreateTexture2D(&desc, nullptr, &targets[i]);
+            HRESULT hr = m_device->CreateTexture2D(&desc, nullptr, &m_overlayTex[i]);
+            if (SUCCEEDED(hr) && m_settings.stereo)
+                hr = m_device->CreateTexture2D(&desc, nullptr, &m_eyeTex[i]);
             if (FAILED(hr))
             {
                 Log("CreateTexture2D(%ux%u fmt %d) failed: 0x%08lX", desc.Width, desc.Height, desc.Format, hr);
@@ -400,6 +404,17 @@ namespace dsvr
 
         if (m_settings.stereo)
         {
+            // Shown in both eyes behind the menu screen.
+            if (!m_blackTex)
+            {
+                D3D11_TEXTURE2D_DESC black = desc;
+                black.Width = black.Height = 16;
+                static const UINT32 zeros[16 * 16] = {};
+                D3D11_SUBRESOURCE_DATA init = { zeros, 16 * sizeof(UINT32), 0 };
+                if (FAILED(m_device->CreateTexture2D(&black, &init, &m_blackTex)))
+                    return false;
+            }
+
             D3D11_TEXTURE2D_DESC staging = desc;
             staging.Width = 1;
             staging.Height = 1;
@@ -551,18 +566,27 @@ namespace dsvr
                 ++m_staleFrames;
             if (m_stereoFrames++ == 0)
                 Log("first stereo frame: eye %d, frame id %u, %ux%u", eye, frameId, frame.width, frame.height);
+            if (m_showingMenu)
+            {
+                vr::VROverlay()->HideOverlay(m_overlay);
+                m_showingMenu = false;
+            }
         }
         else
         {
-            // Not rendered by the stereo camera (menus, loading screens): show it head-locked in both eyes.
-            for (int e = 0; e < 2; ++e)
-            {
-                m_context->CopySubresourceRegion(m_eyeTex[e].Get(), 0, 0, 0, 0, shared, 0, &box);
-                m_eyeHasFrame[e] = true;
-                m_eyeHasPose[e] = false;
-                m_eyeBounds[e] = bounds;
-            }
+            // Not rendered by the stereo camera (menus, loading screens): a flat image can't be fused if it
+            // fills each eye's (differently aimed) field of view, so show it on the world-fixed screen instead.
             ++m_monoFrames;
+            if (EnsureOverlay())
+            {
+                if (!m_showingMenu)
+                {
+                    vr::VROverlay()->ShowOverlay(m_overlay);
+                    m_showingMenu = true;
+                }
+                PresentMono(frame);
+            }
+            return;  // PresentMono already waited for its copy
         }
 
         // The ring slot can be rewritten as soon as we return, so finish reading it first.
@@ -575,6 +599,17 @@ namespace dsvr
 
     void VrPresenter::SubmitStereo()
     {
+        if (m_showingMenu)
+        {
+            // Black scene behind the menu screen overlay.
+            if (!m_blackTex)
+                return;
+            vr::Texture_t black = { m_blackTex.Get(), vr::TextureType_DirectX, vr::ColorSpace_Gamma };
+            for (int e = 0; e < 2; ++e)
+                vr::VRCompositor()->Submit(vr::EVREye(e), &black, nullptr, vr::Submit_Default);
+            return;
+        }
+
         if (!m_eyeHasFrame[0] && !m_eyeHasFrame[1])
             return;
 
