@@ -25,8 +25,9 @@ namespace dsvr
     // gameWidth/Height: the game's render size (the interface image); the window may be larger (dgVoodoo).
     void UpdatePointer(bool active, float panelYaw, float panelPitch, int gameWidth, int gameHeight);
 
-    // Eye frames: keep the game's separately drawn cursor out of the picture (it belongs on the panel).
-    void SetDrawnCursorHidden(bool hidden);
+    // Set around the game's cursor sprite routine (0x656E02) on the game thread: the cursor update it runs on its
+    // own copy of the position is steered onto the game's cursor instead of taking mouse movement.
+    void SetCursorDrawing(bool drawing);
 
     // Pointer direction in seated space (OpenVR conventions: yaw about +y, pitch up; radians).
     bool PointerActive();

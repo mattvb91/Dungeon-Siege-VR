@@ -30,6 +30,12 @@ namespace dsvr
         // 0x7A0648 -> 0x4C6E46, thiscall(double), ret 8); UIShell::Draw (0x47A08E) and the cursor follow.
         const DWORD kUiStartCallSite  = 0x00479F27;
         const DWORD kUiStartFunc      = 0x004C6E46;
+        // Cursor sprite routine (Rapi mouse, 0x7A0680): runs the cursor update on its own copy of the position, then
+        // draws the sprite with save-under. Called with 0 at the flip (into the back buffer, after the end-of-frame
+        // hook) and with 1 from the mouse thread (onto the front buffer, whenever the mouse moves).
+        const DWORD kCursorDrawFunc       = 0x00656E02;
+        const DWORD kCursorFlipCallSite   = 0x0065118A;
+        const DWORD kCursorThreadCallSite = 0x006568FC;
         // Main camera fields that game code reads directly, bypassing the frustum: e.g. terrain picking
         // (0x672701) builds the click-to-move ray from m_fieldOfView, the world position and
         // m_MatrixOrientation. See PublishToCamera.
@@ -78,6 +84,7 @@ namespace dsvr
         typedef void(*GetPanelOrientationFn)(float* yaw, float* pitch);
         typedef void(*SetPointerFn)(float yaw, float pitch, int visible);
         typedef void(__fastcall* UiStartFn)(void* self, void* edx, double time);
+        typedef void(__fastcall* CursorDrawFn)(void* mouse, void* edx, BOOL frontBuffer);
         typedef HRESULT(__stdcall* DeviceClearFn)(void* device, DWORD count, const LONG* rects, DWORD flags, DWORD color, float z, DWORD stencil);
         typedef HRESULT(__stdcall* DeviceSetTransformFn)(void* device, DWORD state, const float* matrix);
 
@@ -86,6 +93,7 @@ namespace dsvr
         const SetViewFn g_originalSetView = reinterpret_cast<SetViewFn>(kSetViewFunc);
         const EndFrameFn g_originalEndFrame = reinterpret_cast<EndFrameFn>(kEndFrameFunc);
         const UiStartFn g_originalUiStart = reinterpret_cast<UiStartFn>(kUiStartFunc);
+        const CursorDrawFn g_originalCursorDraw = reinterpret_cast<CursorDrawFn>(kCursorDrawFunc);
 
         // m_fieldOfView is persistent game state (position and orientation are rebuilt from the SiegePos
         // fields every frame), so remember the original while stereo overrides it.
@@ -145,6 +153,7 @@ namespace dsvr
 
         unsigned g_frameId = 0;        // rendered frames
         int g_frameEye = -1;           // FrameKind rendered this frame, -1 = none (no marker)
+        bool g_flipEyeFrame = false;   // the frame being finished (flip, cursor drawing) is an eye frame
         bool g_uiSeparated = false;    // this frame's interface was split off at kUiStartCallSite
         unsigned g_kindFrameId = ~0u;  // frame id g_frameKind was chosen for
         int g_frameKind = kFrameLeftEye;
@@ -667,8 +676,7 @@ namespace dsvr
                 if (g_uiSeparated && g_frameEye != kFrameInterface)
                     g_uiLayer.RestoreWorld(static_cast<IDirect3DDevice7*>(Device(rapi)));
                 g_uiSeparated = false;
-                if (g_settings.interfacePeriod > 0)
-                    SetDrawnCursorHidden(g_frameEye == kFrameLeftEye || g_frameEye == kFrameRightEye);
+                g_flipEyeFrame = g_frameEye == kFrameLeftEye || g_frameEye == kFrameRightEye;
                 LONG w = *reinterpret_cast<const LONG*>(rapi + kRapiWidth);
                 LONG h = *reinterpret_cast<const LONG*>(rapi + kRapiHeight);
                 LONG cell = LONG(MarkerCellSize(unsigned(w)));
@@ -694,7 +702,26 @@ namespace dsvr
             }
             g_click.valid = false;
             ++g_frameId;
+            // g_flipEyeFrame stays until the next frame is marked: in game the flip that draws the cursor runs at
+            // the start of the next frame (0x650DC1), after this hook (cursor log: eye frames stopped being skipped).
             g_originalEndFrame(engine, edx, a, b);
+        }
+
+        // While the VR pointer drives the mouse the cursor belongs on the interface panel only: drawn at the flip of
+        // interface frames, at the game's cursor. Skipped in eye frames (it showed up there larger, at another
+        // position) and from the mouse thread (front-buffer drawing lands in whatever frame is being presented).
+        void __fastcall HookCursorDraw(void* mouse, void* edx, BOOL frontBuffer)
+        {
+            if (!PointerActive())
+            {
+                g_originalCursorDraw(mouse, edx, frontBuffer);
+                return;
+            }
+            if (frontBuffer || g_flipEyeFrame)
+                return;
+            SetCursorDrawing(true);
+            g_originalCursorDraw(mouse, edx, frontBuffer);
+            SetCursorDrawing(false);
         }
 
         bool PatchCall(DWORD site, DWORD expectedTarget, const void* hook)
@@ -763,7 +790,16 @@ namespace dsvr
                 pointer.degreesPerPixel = config.Float("Pointer", "DegreesPerPixel", pointer.degreesPerPixel);
                 pointer.panelWidth = config.Float("Interface", "Width", pointer.panelWidth);
                 pointer.panelDistance = config.Float("Interface", "Distance", pointer.panelDistance);
-                InstallPointer(pointer);
+                if (InstallPointer(pointer) && IsCall(kCursorFlipCallSite, kCursorDrawFunc) &&
+                    IsCall(kCursorThreadCallSite, kCursorDrawFunc))
+                {
+                    PatchCall(kCursorFlipCallSite, kCursorDrawFunc, &HookCursorDraw);
+                    PatchCall(kCursorThreadCallSite, kCursorDrawFunc, &HookCursorDraw);
+                }
+                else
+                {
+                    Log("head tracking: cursor drawing not redirected");
+                }
             }
         }
         else

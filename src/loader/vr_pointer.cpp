@@ -51,7 +51,7 @@ namespace dsvr
         PointerSettings g_settings;
         bool g_active = false;
         DWORD g_mainThread = 0;                       // game thread (calls UpdatePointer)
-        volatile LONG g_hideDrawnCursor = 0;          // current frame is an eye frame
+        bool g_drawingCursor = false;                 // game thread inside the cursor sprite routine
         DWORD g_lastUpdate = 0;                       // UpdatePointer tick; frames without a world camera time out
         bool g_onPanel = true;
         float g_yaw = 0.0f, g_pitch = 0.0f;           // pointer, seated space
@@ -259,30 +259,26 @@ namespace dsvr
                 return g_realGetCursorPos(pt);
             }
 
-            if (GetCurrentThreadId() != g_mainThread)
+            if (g_drawingCursor || GetCurrentThreadId() != g_mainThread)
             {
-                // The cursor-drawing thread updating its own copy: steer that copy onto the game's cursor, or
-                // into the top-right corner (sprite off-screen) while eye frames are being made. (Answering it as
-                // the game thread made a second cursor that moved about twice as far, and stole mouse movement.)
+                // The cursor sprite routine (0x656E02) updating its own copy of the position (+0x114/+0x118) with
+                // the same cursor update: steer the copy onto the game's cursor and report no movement to the game.
+                // (Answered as the game's own update it moved a second cursor about twice as far.) It calls the
+                // update with re-centring off: in relative mode the movement is taken from the anchor as last
+                // stored, in absolute mode from the copy itself.
                 DWORD mouse = *reinterpret_cast<const DWORD*>(kRapiMousePtr);
                 if (!mouse)
                     return g_realGetCursorPos(pt);
                 int drawnX = *reinterpret_cast<const int*>(mouse + kMousePosX);
                 int drawnY = *reinterpret_cast<const int*>(mouse + kMousePosY);
-                POINT want = { AppInt(kAppCursorX), AppInt(kAppCursorY) };
-                if (g_hideDrawnCursor)
-                {
-                    want.x = g_width - 1;
-                    want.y = 0;
-                }
                 POINT q = { drawnX, drawnY };
                 if (RelativeMode())
                 {
-                    q.x = (AppInt(kAppWindowRight) - AppInt(kAppWindowLeft)) / 2;
-                    q.y = (AppInt(kAppWindowBottom) - AppInt(kAppWindowTop)) / 2;
+                    q.x = AppInt(kAppAnchorX);
+                    q.y = AppInt(kAppAnchorY);
                 }
-                q.x += want.x - drawnX;
-                q.y += want.y - drawnY;
+                q.x += AppInt(kAppCursorX) - drawnX;
+                q.y += AppInt(kAppCursorY) - drawnY;
                 ClientToScreen(GameWindow(), &q);
                 *pt = q;
                 return TRUE;
@@ -455,7 +451,7 @@ namespace dsvr
         }
     }
 
-    void SetDrawnCursorHidden(bool hidden) { InterlockedExchange(&g_hideDrawnCursor, hidden ? 1 : 0); }
+    void SetCursorDrawing(bool drawing) { g_drawingCursor = drawing; }
 
     bool PointerActive() { return Live(); }
     bool PointerOnPanel() { return g_onPanel; }
