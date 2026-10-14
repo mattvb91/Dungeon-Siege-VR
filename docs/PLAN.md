@@ -44,16 +44,22 @@ dsvr detach
   Watermark left ON for this test as visual proof dgVoodoo is rendering.
 - **Done when:** watermark visible, and ~5 min of play (a level, combat, spell effects) looks and performs like vanilla.
 
-### Note for M2 — dgVoodoo add-on API
-The dgVoodoo API SDK ships an official add-on interface (`Inc/Addon/ID3D12Root.hpp`, `ID3D12RootObserver.hpp`,
-sample `D3D12 Addon/Presenter.cpp` that draws over the presented image). This is a supported way to reach
-the final frame without hooking `IDXGISwapChain::Present` ourselves — evaluate it first for M2
-(implies `OutputAPI = d3d12_fl12_0`).
-
-### M2 — VR "cinema" (mono, big screen)
-- Init OpenVR as `VRApplication_Scene`; hook `IDXGISwapChain::Present` in dgVoodoo's device.
-- Copy back buffer to a shared texture; render a curved quad per eye; `IVRCompositor::Submit` both eyes.
-- **Done when:** game is playable on a virtual screen in the Index with stable 90 Hz compositor timing.
+### M2 — VR "cinema" (mono, big screen)  (built + deployed 2026-10-14, awaiting headset test)
+Design (replaces the original "hook Present + Submit per eye" idea):
+- **Frame capture via dgVoodoo's official add-on API.** dgVoodoo 2.87 loads an add-on only if it is named
+  `SampleAddon.dll` (exports `AddOnInit`/`AddOnExit` — note capital O, the docs say `AddonInit`), and only with
+  `OutputAPI = d3d12_fl12_0`. `ID3D12RootObserver::D3D12SwapchainPresentBegin` gives us the presented image;
+  we record a `CopyTextureRegion` into a ring of 3 shared, simultaneous-access D3D12 textures on dgVoodoo's
+  auto command list and publish the slot with the fence value `GetFenceValue()` returns. We return `false`,
+  so the monitor image is untouched. (`src/addon/addon_main.cpp`, `frame_ring.*`)
+- **Display via a SteamVR overlay, not Submit.** A VR thread (`VRApplication_Overlay`) waits for the fence,
+  opens the slot's NT handle on a D3D11 device on the same GPU (matched by LUID), copies into one of two
+  overlay textures and calls `SetOverlayTexture`. The compositor draws the curved screen (3.0 m wide, 2.2 m
+  ahead, seated space) at the HMD's refresh rate, so head tracking is smooth even if the game runs slower.
+  OpenVR only documents D3D12 textures for `Submit`, hence the D3D11 hop. (`vr_overlay.*`)
+- dgVoodoo config now: D3D12 FL12_0 output, windowed, watermark off.
+- Logs: `dsvr_vr.log` in the game folder.
+- **Done when:** game is playable on the virtual screen in the Index; screen stays put when moving the head.
 
 ### M3 — Head-tracked "tabletop" camera
 - Resolve `SiegeEngine` singleton via `?FUBI_GetClassSingleton@SiegeEngine@siege@@...` export.
