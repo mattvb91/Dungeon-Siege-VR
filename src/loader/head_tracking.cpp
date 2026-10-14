@@ -164,7 +164,10 @@ namespace dsvr
             }
         }
 
-        // Game camera basis (D3D left-handed look-at): forward towards the target, right = up x forward.
+        // Game camera basis as it appears on screen. Rapi's look-at (0x653858) takes the view x axis as
+        // forward x up (via 0x43FA4B, which is a x b), and its projection (0x6539DE) is left-handed, so
+        // screen-right in the world is forward x up. (Not up x forward: that mirrored head yaw and swapped
+        // the eyes in the first stereo test.)
         bool CameraBasis(const Vec3& pos, const Vec3& target, const Vec3& up, Vec3& right, Vec3& camUp, Vec3& forward, float& distance)
         {
             Vec3 toTarget = Sub(target, pos);
@@ -172,12 +175,12 @@ namespace dsvr
             if (distance < 1e-3f)
                 return false;
             forward = Mul(toTarget, 1.0f / distance);
-            right = Cross(up, forward);
+            right = Cross(forward, up);
             float rightLen = Length(right);
             if (rightLen < 1e-3f)
                 return false;
             right = Mul(right, 1.0f / rightLen);
-            camUp = Cross(forward, right);
+            camUp = Cross(right, forward);
             return true;
         }
 
@@ -252,7 +255,8 @@ namespace dsvr
             return true;
         }
 
-        // SiegeCamera orientation layout (m_MatrixOrientation): columns are right, up, forward.
+        // SiegeCamera orientation layout (m_MatrixOrientation), matching what the game itself stores (probe
+        // sample: column 0 = up x forward, i.e. screen-left), then up, forward.
         void OrientationMatrix(const Vec3& eye, const Vec3& target, const Vec3& up, float m[9])
         {
             Vec3 f = Sub(target, eye);
