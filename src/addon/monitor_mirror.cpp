@@ -11,19 +11,21 @@ namespace dsvr
 {
     namespace
     {
-        // Root constants: uvOffset, uvScale (source region of the frame), markerUV (its bottom-right pixel).
+        // Root constants: uvOffset, uvScale (source region of the frame), and the centres of marker cells 0
+        // (signature) and 1 (kind); see common/stereo_abi.h. Channels are on/off, read with a threshold.
         const char kShader[] =
             "Texture2D src : register(t0);\n"
             "SamplerState smp : register(s0);\n"
-            "cbuffer C : register(b0) { float2 uvOffset; float2 uvScale; float2 markerUV; float2 pad; };\n"
+            "cbuffer C : register(b0) { float2 uvOffset; float2 uvScale; float2 cell0; float2 cell1; };\n"
             "struct V { float4 pos : SV_Position; float2 uv : TEXCOORD0; };\n"
             "V vs(uint id : SV_VertexID) {\n"
             "  V o; float2 t = float2((id << 1) & 2, id & 2);\n"
             "  o.pos = float4(t * float2(2, -2) + float2(-1, 1), 0, 1); o.uv = uvOffset + t * uvScale; return o; }\n"
             "float4 ps(V i) : SV_Target {\n"
-            "  float3 m = src.SampleLevel(smp, markerUV, 0).rgb * 255.0;\n"
-            "  bool marked = abs(m.r - 165.0) <= 6.0 && (m.b <= 48.0 || m.b >= 200.0 || (m.b >= 92.0 && m.b <= 156.0));\n"
-            "  if (marked && m.b > 48.0) discard;\n"  // right eye or interface frame: keep the previous image
+            "  float3 s = src.SampleLevel(smp, cell0, 0).rgb;\n"
+            "  float3 k = src.SampleLevel(smp, cell1, 0).rgb;\n"
+            "  bool marked = s.r > 0.39 && s.g > 0.39 && s.b < 0.39 && k.b > 0.39;\n"
+            "  if (marked && (k.r > 0.39 || k.g > 0.39)) discard;\n"  // right eye or interface: keep previous image
             "  return float4(src.SampleLevel(smp, i.uv, 0).rgb, 1); }\n";
 
         D3D12_RESOURCE_BARRIER Transition(ID3D12Resource* resource, UINT before, UINT after)
@@ -217,11 +219,13 @@ namespace dsvr
 
         D3D12_RESOURCE_DESC srcDesc = in.pSrcTexture->GetDesc();
         float texW = float(srcDesc.Width), texH = float(srcDesc.Height);
+        float cell = float(width) / float(kMarkerCellDivisor);
+        float cellY = (float(in.srcRect.bottom) - 0.5f * cell) / texH;
         float constants[8] = {
             in.srcRect.left / texW, in.srcRect.top / texH,
             width / texW, height / texH,
-            (in.srcRect.right - 0.5f) / texW, (in.srcRect.bottom - 0.5f) / texH,
-            0.0f, 0.0f };
+            (float(in.srcRect.right) - 0.5f * cell) / texW, cellY,
+            (float(in.srcRect.right) - 1.5f * cell) / texW, cellY };
 
         cmd->ChangeId(this);
         cmd->AFlushLock();

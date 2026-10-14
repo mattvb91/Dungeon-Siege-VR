@@ -522,12 +522,18 @@ namespace dsvr
                 g_uiSeparated = false;
                 LONG w = *reinterpret_cast<const LONG*>(rapi + kRapiWidth);
                 LONG h = *reinterpret_cast<const LONG*>(rapi + kRapiHeight);
-                LONG rect[4] = { w - LONG(kMarkerSize), h - LONG(kMarkerSize), w, h };
+                LONG cell = LONG(MarkerCellSize(unsigned(w)));
                 void* device = Device(rapi);
-                HRESULT hr = DeviceMethod<DeviceClearFn>(device, kDeviceClear)(device, 1, rect, kD3DClearTarget,
-                    MarkerColor(g_frameId, g_frameEye), 1.0f, 0);
+                HRESULT hr = S_OK;
+                for (unsigned c = 0; c < kMarkerCells; ++c)
+                {
+                    LONG right = w - LONG(c) * cell;
+                    LONG rect[4] = { right - cell, h - cell, right, h };
+                    hr = DeviceMethod<DeviceClearFn>(device, kDeviceClear)(device, 1, rect, kD3DClearTarget,
+                        MarkerBitsColor(MarkerCellBits(c, g_frameId, g_frameEye)), 1.0f, 0);
+                }
                 if (g_stereoFrames++ == 0)
-                    Log("stereo: first marked frame (id %u, eye %d, target %ldx%ld, Clear 0x%08lX)", g_frameId, g_frameEye, w, h, hr);
+                    Log("stereo: first marked frame (id %u, kind %d, target %ldx%ld, cell %ld, Clear 0x%08lX)", g_frameId, g_frameEye, w, h, cell, hr);
                 g_frameEye = -1;
             }
             ++g_frameId;

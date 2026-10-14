@@ -38,31 +38,59 @@ namespace dsvr
 
     // Marker stamped into the bottom-right corner of each stereo frame by the loader and read back by the
     // add-on after capture, so the kind and pose travel with the image (dgVoodoo may present asynchronously).
-    // Values survive 16-bit (565) back buffers: R is a magic value, G carries 6 bits of frame id, B the kind.
-    const unsigned kMarkerMagicR = 0xA5;
+    //
+    // The captured image has the game's gamma ramp applied (measured: 255 -> 228, 165 -> 160), so every
+    // channel is fully on or off and read with a threshold. Four square cells sit along the bottom edge,
+    // right to left, each 1/256 of the image width (so they scale with dgVoodoo's internal resolution):
+    //   cell 0: signature, yellow (R on, G on, B off)
+    //   cell 1: kind: R = bit 0, G = bit 1, B on
+    //   cell 2: frame id bits 0-2 (R, G, B)
+    //   cell 3: frame id bits 3-5 (R, G, B)
     const unsigned kMarkerFrameIds = 64;
-    const unsigned kMarkerSize = 2;  // pixels
+    const unsigned kMarkerCells = 4;
+    const unsigned kMarkerCellDivisor = 256;  // cell size = image width / 256 (minimum 2 game pixels)
 
-    inline unsigned MarkerColor(unsigned frameId, int kind)
+    inline unsigned MarkerCellSize(unsigned imageWidth)
     {
-        unsigned g = (frameId % kMarkerFrameIds) << 2;
-        unsigned b = kind == kFrameRightEye ? 0xF8 : kind == kFrameInterface ? 0x7C : 0x00;
-        return 0xFF000000u | (kMarkerMagicR << 16) | (g << 8) | b;  // D3DCOLOR (ARGB)
+        unsigned size = imageWidth / kMarkerCellDivisor;
+        return size < 2 ? 2 : size;
     }
 
-    inline bool DecodeMarker(unsigned r, unsigned g, unsigned b, unsigned& frameId, int& kind)
+    inline unsigned MarkerBitsColor(unsigned bits)  // bit 0 = R, 1 = G, 2 = B -> D3DCOLOR (ARGB)
     {
-        if (r < kMarkerMagicR - 6 || r > kMarkerMagicR + 6)
+        return 0xFF000000u | ((bits & 1) ? 0x00FF0000u : 0) | ((bits & 2) ? 0x0000FF00u : 0) | ((bits & 4) ? 0x000000FFu : 0);
+    }
+
+    inline unsigned MarkerCellBits(unsigned cell, unsigned frameId, int kind)
+    {
+        unsigned id = frameId % kMarkerFrameIds;
+        switch (cell)
+        {
+        case 0:  return 1 | 2;             // yellow signature
+        case 1:  return unsigned(kind) | 4;
+        case 2:  return id & 7;
+        default: return (id >> 3) & 7;
+        }
+    }
+
+    inline unsigned MarkerBitsFromRgb(unsigned r, unsigned g, unsigned b)
+    {
+        const unsigned threshold = 100;
+        return (r > threshold ? 1u : 0u) | (g > threshold ? 2u : 0u) | (b > threshold ? 4u : 0u);
+    }
+
+    // rgb[cell] for cells 0..3 (8-bit values as captured).
+    inline bool DecodeMarker(const unsigned rgb[kMarkerCells][3], unsigned& frameId, int& kind)
+    {
+        unsigned bits[kMarkerCells];
+        for (unsigned i = 0; i < kMarkerCells; ++i)
+            bits[i] = MarkerBitsFromRgb(rgb[i][0], rgb[i][1], rgb[i][2]);
+        if (bits[0] != 3 || !(bits[1] & 4))
             return false;
-        if (b <= 0x30)
-            kind = kFrameLeftEye;
-        else if (b >= 0xC8)
-            kind = kFrameRightEye;
-        else if (b >= 0x5C && b <= 0x9C)
-            kind = kFrameInterface;
-        else
-            return false;  // not our marker
-        frameId = (g >> 2) % kMarkerFrameIds;
+        kind = int(bits[1] & 3);
+        if (kind > kFrameInterface)
+            return false;
+        frameId = bits[2] | (bits[3] << 3);
         return true;
     }
 }

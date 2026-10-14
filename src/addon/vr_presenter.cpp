@@ -19,6 +19,9 @@ namespace dsvr
     {
         const float kPi = 3.14159265f;
         const DWORD kVrRetryMs = 3000;
+        // Enough for the marker strip up to 8192-wide images (4 cells of width/256).
+        const UINT kMarkerStagingWidth = 160;
+        const UINT kMarkerStagingHeight = 40;
         const DWORD kStatsIntervalMs = 10000;
 
         bool SameLuid(const LUID& a, const LUID& b) { return a.LowPart == b.LowPart && a.HighPart == b.HighPart; }
@@ -467,8 +470,8 @@ namespace dsvr
             }
 
             D3D11_TEXTURE2D_DESC staging = desc;
-            staging.Width = 1;
-            staging.Height = 1;
+            staging.Width = kMarkerStagingWidth;
+            staging.Height = kMarkerStagingHeight;
             staging.Usage = D3D11_USAGE_STAGING;
             staging.BindFlags = 0;
             staging.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
@@ -545,42 +548,52 @@ namespace dsvr
 
     bool VrPresenter::ReadMarker(ID3D11Texture2D* source, const FrameRing::Frame& frame, unsigned& frameId, int& eye)
     {
-        if (!m_markerStaging || frame.width < kMarkerSize || frame.height < kMarkerSize)
+        // Cells are 1/256 of the image width (see stereo_abi.h); copy the bottom-right strip holding them.
+        float cell = float(frame.width) / float(kMarkerCellDivisor);
+        UINT stripW = UINT(std::ceil(cell * kMarkerCells));
+        UINT stripH = UINT(std::ceil(cell));
+        if (!m_markerStaging || stripW > kMarkerStagingWidth || stripH > kMarkerStagingHeight ||
+            frame.width < stripW || frame.height < stripH || cell < 2.0f)
             return false;
 
-        D3D11_BOX box = { frame.width - 1, frame.height - 1, 0, frame.width, frame.height, 1 };
+        D3D11_BOX box = { frame.width - stripW, frame.height - stripH, 0, frame.width, frame.height, 1 };
         m_context->CopySubresourceRegion(m_markerStaging.Get(), 0, 0, 0, 0, source, 0, &box);
 
         D3D11_MAPPED_SUBRESOURCE mapped;
         if (FAILED(m_context->Map(m_markerStaging.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
             return false;
-        const BYTE* p = static_cast<const BYTE*>(mapped.pData);
-        unsigned r, g, b;
+
+        unsigned rgb[kMarkerCells][3] = {};
         bool known = true;
-        switch (frame.format)
+        UINT y = UINT(float(stripH) - 0.5f * cell);
+        for (unsigned c = 0; c < kMarkerCells && known; ++c)
         {
-        case DXGI_FORMAT_R8G8B8A8_UNORM:
-        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
-            r = p[0]; g = p[1]; b = p[2];
-            break;
-        case DXGI_FORMAT_B8G8R8A8_UNORM:
-        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
-        case DXGI_FORMAT_B8G8R8X8_UNORM:
-            r = p[2]; g = p[1]; b = p[0];
-            break;
-        case DXGI_FORMAT_R10G10B10A2_UNORM:
-        {
-            UINT32 v = *reinterpret_cast<const UINT32*>(p);
-            r = (v >> 2) & 0xFF; g = (v >> 12) & 0xFF; b = (v >> 22) & 0xFF;
-            break;
-        }
-        default:
-            known = false;
-            r = g = b = 0;
-            break;
+            UINT x = UINT(float(stripW) - (float(c) + 0.5f) * cell);
+            const BYTE* p = static_cast<const BYTE*>(mapped.pData) + size_t(y) * mapped.RowPitch + size_t(x) * 4;
+            switch (frame.format)
+            {
+            case DXGI_FORMAT_R8G8B8A8_UNORM:
+            case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+                rgb[c][0] = p[0]; rgb[c][1] = p[1]; rgb[c][2] = p[2];
+                break;
+            case DXGI_FORMAT_B8G8R8A8_UNORM:
+            case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+            case DXGI_FORMAT_B8G8R8X8_UNORM:
+                rgb[c][0] = p[2]; rgb[c][1] = p[1]; rgb[c][2] = p[0];
+                break;
+            case DXGI_FORMAT_R10G10B10A2_UNORM:
+            {
+                UINT32 v = *reinterpret_cast<const UINT32*>(p);
+                rgb[c][0] = (v >> 2) & 0xFF; rgb[c][1] = (v >> 12) & 0xFF; rgb[c][2] = (v >> 22) & 0xFF;
+                break;
+            }
+            default:
+                known = false;
+                break;
+            }
         }
         m_context->Unmap(m_markerStaging.Get(), 0);
-        return known && DecodeMarker(r, g, b, frameId, eye);
+        return known && DecodeMarker(rgb, frameId, eye);
     }
 
     void VrPresenter::ConsumeStereo(FrameRing::Frame& frame)
@@ -760,8 +773,8 @@ namespace dsvr
             "float4 ps(V i) : SV_Target {\n"
             "  if (i.uv.x >= markerStart.x && i.uv.y >= markerStart.y) return 0;\n"
             "  float3 c = src.Sample(smp, i.uv).rgb;\n"
-            "  float3 d = abs(c - float3(1, 0, 1));\n"
-            "  if (max(d.r, max(d.g, d.b)) < 0.08) return 0;\n"
+            // The game's gamma ramp scales the key (255,0,255 arrives as 228,0,228), so test for 'magenta'.
+            "  if (c.g < 0.12 && c.r > 0.5 && c.b > 0.5 && abs(c.r - c.b) < 0.1) return 0;\n"
             "  return float4(c, 1); }\n";
 
         ComPtr<ID3DBlob> vs, ps, errors;
@@ -861,9 +874,10 @@ namespace dsvr
             float* c = static_cast<float*>(mapped.pData);
             c[0] = float(frame.width) / float(frame.texWidth);
             c[1] = float(frame.height) / float(frame.texHeight);
-            // Marker region: kMarkerSize game pixels, scaled by dgVoodoo's internal resolution (up to ~1%).
-            c[2] = c[0] * 0.99f;
-            c[3] = c[1] * 0.99f;
+            // Marker strip along the bottom-right edge (stereo_abi.h), with a little margin.
+            float cell = float(frame.width) / float(kMarkerCellDivisor);
+            c[2] = (float(frame.width) - (kMarkerCells + 0.5f) * cell) / float(frame.texWidth);
+            c[3] = (float(frame.height) - 1.2f * cell) / float(frame.texHeight);
             m_context->Unmap(m_keyConstants.Get(), 0);
         }
 
