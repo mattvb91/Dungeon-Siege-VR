@@ -82,7 +82,7 @@ namespace dsvr
         void DumpFrame(ID3D11Texture2D* source, const FrameRing::Frame& frame, const char* fileName);
         void SubmitStereo();
         bool ReadMarker(ID3D11Texture2D* source, const FrameRing::Frame& frame, unsigned& frameId, int& eye);
-        bool LooksLikeInterface(ID3D11Texture2D* source, const FrameRing::Frame& frame);
+        int CountKeyPixels(ID3D11Texture2D* source, const FrameRing::Frame& frame);
 
         FrameRing* m_ring = nullptr;
         PresenterSettings m_settings;
