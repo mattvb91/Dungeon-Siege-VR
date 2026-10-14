@@ -5,6 +5,7 @@ Mod to play Dungeon Siege 1 (Steam, v1.11.1.1486) on a Valve Index via SteamVR.
 - [docs/PLAN.md](docs/PLAN.md) — architecture and milestones
 - [docs/EXE-ANALYSIS.md](docs/EXE-ANALYSIS.md) — static analysis of `DungeonSiege.exe` (evidence)
 - [tools/re/](tools/re) — PowerShell scripts that reproduce the analysis
+- [docs/media/demo.mp4](docs/media/demo.mp4) — demo: the monitor preview while playing in the headset (720p, 67 s)
 
 ## Build
 
