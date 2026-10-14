@@ -524,7 +524,7 @@ namespace dsvr
                         float panelYaw = 0.0f, panelPitch = 0.0f;
                         if (ConnectAddon() && g_getPanelOrientation)
                             g_getPanelOrientation(&panelYaw, &panelPitch);
-                        UpdatePointer(inWorld && g_settings.interfacePeriod > 0, panelYaw, panelPitch);
+                        UpdatePointer(inWorld && g_settings.interfacePeriod > 0, panelYaw, panelPitch, width, height);
                         if (g_setPointer)
                         {
                             float yaw, pitch;

@@ -36,6 +36,13 @@ namespace dsvr
         kFrameInterface = 2,  // 2D interface over kUiKeyColor (loader/ui_layer.h), shown on a head-locked panel
     };
 
+    // Where the loader parks the game's cursor while the VR pointer is off the interface panel (fractions of
+    // the game's client area). Away from every edge: the game rotates the camera when the cursor touches the
+    // screen edge (camera_x/y_screen_track). The add-on hides the cursor sprite there (hotspot top-left).
+    const float kParkX = 0.5f;
+    const float kParkY = 0.3f;
+    const float kParkMaskSize = 48.0f / 1024.0f;  // cursor sprite extent, fraction of the client width
+
     // Marker stamped into the bottom-right corner of each stereo frame by the loader and read back by the
     // add-on after capture, so the kind and pose travel with the image (dgVoodoo may present asynchronously).
     //

@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "common/log.h"
+#include "common/stereo_abi.h"
 
 namespace dsvr
 {
@@ -29,8 +30,29 @@ namespace dsvr
         bool g_onPanel = true;
         float g_yaw = 0.0f, g_pitch = 0.0f;           // pointer, seated space
         float g_panelYaw = 0.0f, g_panelPitch = 0.0f;
-        int g_cursorX = 0, g_cursorY = 0;             // game cursor, client pixels
-        int g_width = 1024, g_height = 768;
+        int g_cursorX = 0, g_cursorY = 0;             // game cursor, game pixels
+        int g_width = 1024, g_height = 768;           // game render size (the image shown on the panel)
+        int g_clientWidth = 1024, g_clientHeight = 768;
+
+        // dgVoodoo scales the game image into the window keeping its aspect (centred, bars on the sides), so
+        // window (client) pixels and game pixels differ, e.g. 3840x2160 vs 1024x768. Same size = identity.
+        void GameToClient(int gx, int gy, int& cx, int& cy)
+        {
+            float scale = std::fmin(float(g_clientWidth) / float(g_width), float(g_clientHeight) / float(g_height));
+            float offX = 0.5f * (float(g_clientWidth) - scale * float(g_width));
+            float offY = 0.5f * (float(g_clientHeight) - scale * float(g_height));
+            cx = int(offX + (float(gx) + 0.5f) * scale);
+            cy = int(offY + (float(gy) + 0.5f) * scale);
+        }
+
+        void ClientToGame(int cx, int cy, int& gx, int& gy)
+        {
+            float scale = std::fmin(float(g_clientWidth) / float(g_width), float(g_clientHeight) / float(g_height));
+            float offX = 0.5f * (float(g_clientWidth) - scale * float(g_width));
+            float offY = 0.5f * (float(g_clientHeight) - scale * float(g_height));
+            gx = int((float(cx) - offX) / scale);
+            gy = int((float(cy) - offY) / scale);
+        }
 
         HWND GameWindow()
         {
@@ -59,7 +81,7 @@ namespace dsvr
 
         V3 PointerVector() { return Rotate(g_yaw, g_pitch, { 0.0f, 0.0f, -1.0f }); }
 
-        // Where the pointer ray from the seated origin meets the panel, in client pixels.
+        // Where the pointer ray from the seated origin meets the panel, in game pixels.
         bool HitPanel(int& x, int& y)
         {
             V3 local = Unrotate(g_panelYaw, g_panelPitch, PointerVector());
@@ -103,9 +125,10 @@ namespace dsvr
             }
             else
             {
-                // Top-right corner: the cursor sprite hangs off-screen and the interface rarely uses it.
-                g_cursorX = g_width - 1;
-                g_cursorY = 0;
+                // Parked away from the screen edges (edge contact rotates the camera); the add-on hides the
+                // sprite there. The click camera is rotated so this pixel's ray follows the pointer.
+                g_cursorX = int(kParkX * float(g_width));
+                g_cursorY = int(kParkY * float(g_height));
             }
         }
 
@@ -118,7 +141,9 @@ namespace dsvr
         {
             if (!Live() || !pt)
                 return g_realGetCursorPos(pt);
-            POINT p = { g_cursorX, g_cursorY };
+            int cx, cy;
+            GameToClient(g_cursorX, g_cursorY, cx, cy);
+            POINT p = { cx, cy };
             ClientToScreen(GameWindow(), &p);
             *pt = p;
             return TRUE;
@@ -130,9 +155,11 @@ namespace dsvr
                 return g_realSetCursorPos(x, y);
             POINT p = { x, y };
             ScreenToClient(GameWindow(), &p);
-            if (p.x >= 0 && p.y >= 0 && p.x < g_width && p.y < g_height)
+            int gx, gy;
+            ClientToGame(p.x, p.y, gx, gy);
+            if (gx >= 0 && gy >= 0 && gx < g_width && gy < g_height)
             {
-                PointAtPixel(p.x, p.y);
+                PointAtPixel(gx, gy);
                 PlaceGameCursor();
             }
             return TRUE;
@@ -141,7 +168,11 @@ namespace dsvr
         void RewriteMouse(LPMSG msg)
         {
             if (Live() && msg && IsMouseMessage(msg->message))
-                msg->lParam = MAKELPARAM(g_cursorX, g_cursorY);
+            {
+                int cx, cy;
+                GameToClient(g_cursorX, g_cursorY, cx, cy);
+                msg->lParam = MAKELPARAM(cx, cy);
+            }
         }
 
         BOOL WINAPI HookPeekMessageA(LPMSG msg, HWND hwnd, UINT first, UINT last, UINT remove)
@@ -203,7 +234,7 @@ namespace dsvr
         return ok;
     }
 
-    void UpdatePointer(bool active, float panelYaw, float panelPitch)
+    void UpdatePointer(bool active, float panelYaw, float panelPitch, int gameWidth, int gameHeight)
     {
         HWND hwnd = GameWindow();
         if (!active || !hwnd || !g_realGetCursorPos)
@@ -216,8 +247,13 @@ namespace dsvr
         GetClientRect(hwnd, &client);
         if (client.right > 0 && client.bottom > 0)
         {
-            g_width = client.right;
-            g_height = client.bottom;
+            g_clientWidth = client.right;
+            g_clientHeight = client.bottom;
+        }
+        if (gameWidth > 0 && gameHeight > 0)
+        {
+            g_width = gameWidth;
+            g_height = gameHeight;
         }
         g_panelYaw = panelYaw;
         g_lastUpdate = GetTickCount();
@@ -229,7 +265,7 @@ namespace dsvr
             g_yaw = panelYaw;
             g_pitch = panelPitch;
             g_active = true;
-            Log("vr pointer: active (client %dx%d)", g_width, g_height);
+            Log("vr pointer: active (game %dx%d in client %dx%d)", g_width, g_height, g_clientWidth, g_clientHeight);
         }
 
         // Mouse movement turns the pointer; the real cursor is held at the window centre.
@@ -237,7 +273,7 @@ namespace dsvr
         GetWindowThreadProcessId(GetForegroundWindow(), &pid);
         if (pid == GetCurrentProcessId())
         {
-            POINT centre = { g_width / 2, g_height / 2 };
+            POINT centre = { g_clientWidth / 2, g_clientHeight / 2 };
             ClientToScreen(hwnd, &centre);
             POINT real;
             if (g_realGetCursorPos(&real))

@@ -775,13 +775,15 @@ namespace dsvr
         static const char kShader[] =
             "Texture2D src : register(t0);\n"
             "SamplerState smp : register(s0);\n"
-            "cbuffer C : register(b0) { float2 uvScale; float2 markerStart; float2 keyUV; float2 pad; };\n"
+            "cbuffer C : register(b0) { float2 uvScale; float2 markerStart; float2 keyUV; float2 pad; float4 parkRect; };\n"
             "struct V { float4 pos : SV_Position; float2 uv : TEXCOORD0; };\n"
             "V vs(uint id : SV_VertexID) {\n"
             "  V o; float2 t = float2((id << 1) & 2, id & 2);\n"
             "  o.pos = float4(t * float2(2, -2) + float2(-1, 1), 0, 1); o.uv = t * uvScale; return o; }\n"
             "float4 ps(V i) : SV_Target {\n"
             "  if (i.uv.x >= markerStart.x && i.uv.y >= markerStart.y) return 0;\n"
+            // Parked game cursor (VR pointer off the panel), see kParkX in stereo_abi.h.
+            "  if (all(i.uv >= parkRect.xy) && all(i.uv < parkRect.zw)) return 0;\n"
             "  float3 c = src.Sample(smp, i.uv).rgb;\n"
             // The key arrives through the game's gamma ramp (255,0,255 -> 228,0,228); measure its level from
             // the top-left pixel when that is background.
@@ -814,7 +816,7 @@ namespace dsvr
         sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
         sd.MaxLOD = D3D11_FLOAT32_MAX;
         D3D11_BUFFER_DESC bd = {};
-        bd.ByteWidth = 32;
+        bd.ByteWidth = 48;
         bd.Usage = D3D11_USAGE_DYNAMIC;
         bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
         bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -1045,6 +1047,16 @@ namespace dsvr
             c[4] = 2.5f / float(frame.texWidth);
             c[5] = 2.5f / float(frame.texHeight);
             c[6] = c[7] = 0.0f;
+            // Hide the parked game cursor while the VR pointer is off the panel (empty rect otherwise).
+            AcquireSRWLockShared(&m_pointerLock);
+            bool parked = m_pointerVisible && GetTickCount() - m_pointerTick < 250;
+            ReleaseSRWLockShared(&m_pointerLock);
+            float su = float(frame.width) / float(frame.texWidth), sv = float(frame.height) / float(frame.texHeight);
+            float mask = kParkMaskSize * float(frame.width);
+            c[8] = parked ? su * kParkX : 2.0f;
+            c[9] = parked ? sv * kParkY : 2.0f;
+            c[10] = parked ? (kParkX * float(frame.width) + mask) / float(frame.texWidth) : 2.0f;
+            c[11] = parked ? (kParkY * float(frame.height) + mask) / float(frame.texHeight) : 2.0f;
             m_context->Unmap(m_keyConstants.Get(), 0);
         }
 
