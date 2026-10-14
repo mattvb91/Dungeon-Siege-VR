@@ -362,8 +362,8 @@ namespace dsvr
         void PublishToCamera(DWORD cam, const Vec3& pos, const float matrix[9], bool setFov, float fov)
         {
             BYTE* c = reinterpret_cast<BYTE*>(cam);
-            memcpy(c + kCameraPosition, &pos, sizeof(pos));
-            memcpy(c + kCameraMatrix, matrix, 9 * sizeof(float));
+            memmove(c + kCameraPosition, &pos, sizeof(pos));
+            memmove(c + kCameraMatrix, matrix, 9 * sizeof(float));  // may be the camera's own field
             if (setFov)
             {
                 if (!g_fovOverridden)
@@ -433,10 +433,18 @@ namespace dsvr
                     // cropped view.
                     const Vec3* gamePos = g_pass.stereo ? &g_pass.center : &g_pass.eye;
                     g_originalFrustum(camera, edx, width, height, eyeFov, nearZ, farZ, gamePos, shifted);
-                    // With the interface on its own panel, the cursor is seen on that panel, so the game's
-                    // click ray must span the panel's angle rather than the eye image's.
-                    float publishedFov = (g_pass.stereo && g_settings.interfacePeriod > 0) ? g_settings.hudFov : eyeFov;
-                    PublishToCamera(cam, *gamePos, shifted, g_pass.stereo, publishedFov);
+                    if (g_pass.stereo && g_settings.interfacePeriod > 0)
+                    {
+                        // The cursor is seen on the interface panel, fixed straight ahead of the seated origin,
+                        // which is where the game camera is. So the game's own camera, with the panel's angle
+                        // as its fov, aims clicks through the panel. Only the fov needs changing.
+                        Vec3 original = *pos;
+                        PublishToCamera(cam, original, matrix, true, g_settings.hudFov);
+                    }
+                    else
+                    {
+                        PublishToCamera(cam, *gamePos, shifted, g_pass.stereo, eyeFov);
+                    }
                     return;
                 }
             }

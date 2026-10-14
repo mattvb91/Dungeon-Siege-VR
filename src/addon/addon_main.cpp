@@ -263,6 +263,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
     if (reason == DLL_PROCESS_ATTACH)
     {
         g_module = module;
+        dsvr::g_dumpModule = module;
         DisableThreadLibraryCalls(module);
         dsvr::OpenLog(module, "dsvr_vr.log");
         Log("dsvr addon attach");

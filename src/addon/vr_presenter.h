@@ -18,6 +18,9 @@
 
 namespace dsvr
 {
+    // Module whose folder receives diagnostic dumps (set by addon_main.cpp).
+    extern HMODULE g_dumpModule;
+
     struct PresenterSettings
     {
         bool stereo = false;
@@ -66,6 +69,7 @@ namespace dsvr
         bool EnsureHudPipeline();
         bool EnsureHudOverlay();
         void SetHudVisible(bool visible);
+        void DumpFrame(ID3D11Texture2D* source, const FrameRing::Frame& frame, const char* fileName);
         void SubmitStereo();
         bool ReadMarker(ID3D11Texture2D* source, const FrameRing::Frame& frame, unsigned& frameId, int& eye);
 

@@ -4,6 +4,8 @@
 #include <d3dcompiler.h>
 
 #include <cmath>
+#include <cstdio>
+#include <vector>
 
 #include "common/log.h"
 
@@ -11,6 +13,8 @@ using Microsoft::WRL::ComPtr;
 
 namespace dsvr
 {
+    HMODULE g_dumpModule = nullptr;
+
     namespace
     {
         const float kPi = 3.14159265f;
@@ -627,6 +631,8 @@ namespace dsvr
             }
             ReleaseSRWLockShared(&m_viewLock);
 
+            if (m_stereoFrames == 400)
+                DumpFrame(shared, frame, "dsvr_eye.bmp");
             m_context->CopySubresourceRegion(m_eyeTex[eye].Get(), 0, 0, 0, 0, shared, 0, &box);
             m_eyeHasFrame[eye] = true;
             m_eyeHasPose[eye] = found;
@@ -665,6 +671,75 @@ namespace dsvr
         DWORD start = GetTickCount();
         while (m_context->GetData(m_copyDone.Get(), nullptr, 0, 0) == S_FALSE && GetTickCount() - start < 50)
             SwitchToThread();
+    }
+
+    // Diagnostic: writes the captured image (downsampled to at most ~1024 wide) as a 24-bit BMP next to the DLL.
+    void VrPresenter::DumpFrame(ID3D11Texture2D* source, const FrameRing::Frame& frame, const char* fileName)
+    {
+        D3D11_TEXTURE2D_DESC desc = {};
+        desc.Width = frame.width;
+        desc.Height = frame.height;
+        desc.MipLevels = 1;
+        desc.ArraySize = 1;
+        desc.Format = frame.format;
+        desc.SampleDesc.Count = 1;
+        desc.Usage = D3D11_USAGE_STAGING;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        ComPtr<ID3D11Texture2D> staging;
+        if (FAILED(m_device->CreateTexture2D(&desc, nullptr, &staging)))
+            return;
+        D3D11_BOX box = { 0, 0, 0, frame.width, frame.height, 1 };
+        m_context->CopySubresourceRegion(staging.Get(), 0, 0, 0, 0, source, 0, &box);
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        if (FAILED(m_context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
+            return;
+
+        bool bgra = frame.format == DXGI_FORMAT_B8G8R8A8_UNORM || frame.format == DXGI_FORMAT_B8G8R8X8_UNORM ||
+                    frame.format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+        UINT step = (frame.width + 1023) / 1024;
+        UINT w = frame.width / step, h = frame.height / step;
+        UINT rowBytes = (w * 3 + 3) & ~3u;
+
+        char path[MAX_PATH];
+        DWORD len = GetModuleFileNameA(g_dumpModule, path, MAX_PATH);
+        while (len > 0 && path[len - 1] != '\\')
+            --len;
+        path[len] = '\0';
+        strcat_s(path, fileName);
+
+        FILE* file = nullptr;
+        if (fopen_s(&file, path, "wb") == 0 && file)
+        {
+            BITMAPFILEHEADER fh = {};
+            BITMAPINFOHEADER ih = {};
+            fh.bfType = 0x4D42;
+            fh.bfOffBits = sizeof(fh) + sizeof(ih);
+            fh.bfSize = fh.bfOffBits + rowBytes * h;
+            ih.biSize = sizeof(ih);
+            ih.biWidth = LONG(w);
+            ih.biHeight = LONG(h);  // bottom-up
+            ih.biPlanes = 1;
+            ih.biBitCount = 24;
+            fwrite(&fh, sizeof(fh), 1, file);
+            fwrite(&ih, sizeof(ih), 1, file);
+            std::vector<BYTE> row(rowBytes);
+            for (UINT y = 0; y < h; ++y)
+            {
+                const BYTE* src = static_cast<const BYTE*>(mapped.pData) + size_t(h - 1 - y) * step * mapped.RowPitch;
+                for (UINT x = 0; x < w; ++x)
+                {
+                    const BYTE* p = src + size_t(x) * step * 4;
+                    BYTE r = bgra ? p[2] : p[0], g = p[1], b = bgra ? p[0] : p[2];
+                    row[x * 3 + 0] = b;
+                    row[x * 3 + 1] = g;
+                    row[x * 3 + 2] = r;
+                }
+                fwrite(row.data(), 1, rowBytes, file);
+            }
+            fclose(file);
+            Log("diagnostic: wrote %s (%ux%u from %ux%u)", fileName, w, h, frame.width, frame.height);
+        }
+        m_context->Unmap(staging.Get(), 0);
     }
 
     bool VrPresenter::EnsureHudPipeline()
@@ -731,15 +806,16 @@ namespace dsvr
             m_hud = vr::k_ulOverlayHandleInvalid;
             return false;
         }
-        // Head-locked: the cursor lives on this panel, so it should stay where the player looks.
+        // Fixed in seated space straight ahead (a head-locked panel was hard to read: user feedback). The loader
+        // aims clicks from the seated origin through this panel (head_tracking.cpp, PublishToCamera).
         vr::HmdMatrix34_t transform = { {
             { 1.0f, 0.0f, 0.0f, 0.0f },
             { 0.0f, 1.0f, 0.0f, 0.0f },
             { 0.0f, 0.0f, 1.0f, -m_settings.hudDistance },
         } };
         overlay->SetOverlayWidthInMeters(m_hud, m_settings.hudWidth);
-        overlay->SetOverlayTransformTrackedDeviceRelative(m_hud, vr::k_unTrackedDeviceIndex_Hmd, &transform);
-        Log("interface panel created: %.2f m wide at %.2f m, head-locked", m_settings.hudWidth, m_settings.hudDistance);
+        overlay->SetOverlayTransformAbsolute(m_hud, vr::TrackingUniverseSeated, &transform);
+        Log("interface panel created: %.2f m wide at %.2f m, fixed in seated space", m_settings.hudWidth, m_settings.hudDistance);
         return true;
     }
 
@@ -758,6 +834,8 @@ namespace dsvr
     {
         if (!EnsureHudPipeline() || !EnsureHudOverlay())
             return;
+        if (m_interfaceFrames == 60)
+            DumpFrame(shared, frame, "dsvr_interface.bmp");
 
         ComPtr<ID3D11ShaderResourceView>& srv = m_sharedSrv[frame.slot];
         if (!srv)
