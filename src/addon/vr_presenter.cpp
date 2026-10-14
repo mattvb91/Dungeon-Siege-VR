@@ -141,21 +141,15 @@ namespace dsvr
                 Log("  eye %d: raw l %.3f r %.3f t %.3f b %.3f, eye->head offset %.4f %.4f %.4f",
                     eye, l, r, t, b, e.m[0][3], e.m[1][3], e.m[2][3]);
 
-                // Render a symmetric frustum covering the eye's asymmetric one, then crop to it on submit.
-                // The game draws its UI in screen space; with symmetric frusta it lands in the same direction
-                // for both eyes (fusable, at infinity) instead of being shifted by each lens's asymmetry.
+                // Each eye renders a symmetric frustum covering its asymmetric one (fitted to the render
+                // target's aspect, see FitSymmetricFrustum) and SubmitStereo crops back to the real one.
                 // Valve's projection math maps pfBottom to the top of the image, pfTop to the bottom.
-                float up = b, down = t;
-                float th = std::fmax(std::fabs(l), std::fabs(r));
-                float tv = std::fmax(std::fabs(up), std::fabs(down));
-                m_symTan[eye][0] = th;
-                m_symTan[eye][1] = tv;
-                m_eyeCrop[eye].uMin = (l + th) / (2.0f * th);
-                m_eyeCrop[eye].uMax = (r + th) / (2.0f * th);
-                m_eyeCrop[eye].vMin = (tv - up) / (2.0f * tv);
-                m_eyeCrop[eye].vMax = (tv - down) / (2.0f * tv);
-                Log("  eye %d: rendering symmetric +-%.3f x +-%.3f, crop u %.3f..%.3f v %.3f..%.3f", eye, th, tv,
-                    m_eyeCrop[eye].uMin, m_eyeCrop[eye].uMax, m_eyeCrop[eye].vMin, m_eyeCrop[eye].vMax);
+                m_rawTan[eye][0] = l;
+                m_rawTan[eye][1] = r;
+                m_rawTan[eye][2] = b;  // up
+                m_rawTan[eye][3] = t;  // down
+                m_symTan[eye][0] = std::fmax(std::fabs(l), std::fabs(r));
+                m_symTan[eye][1] = std::fmax(std::fabs(b), std::fabs(t));
             }
         }
 
@@ -560,11 +554,19 @@ namespace dsvr
         int eye;
         if (ReadMarker(shared, frame, frameId, eye))
         {
-            // The image fills frame.width x frame.height of the texture; crop that to the eye's real frustum.
+            // The image fills frame.width x frame.height of the texture and spans the fitted symmetric
+            // frustum the loader rendered; crop that to the eye's real frustum.
+            float th, tv;
+            FitSymmetricFrustum(m_symTan[eye][0], m_symTan[eye][1], float(frame.width) / float(frame.height), th, tv);
+            const float* raw = m_rawTan[eye];
             float su = float(frame.width) / float(frame.texWidth);
             float sv = float(frame.height) / float(frame.texHeight);
-            const vr::VRTextureBounds_t& crop = m_eyeCrop[eye];
-            vr::VRTextureBounds_t bounds = { crop.uMin * su, crop.vMin * sv, crop.uMax * su, crop.vMax * sv };
+            vr::VRTextureBounds_t bounds = {
+                su * (raw[0] + th) / (2.0f * th), sv * (tv - raw[2]) / (2.0f * tv),
+                su * (raw[1] + th) / (2.0f * th), sv * (tv - raw[3]) / (2.0f * tv) };
+            if (m_stereoFrames == 0)
+                Log("eye %d: rendered +-%.3f x +-%.3f, crop u %.3f..%.3f v %.3f..%.3f (texture fraction)", eye, th, tv,
+                    bounds.uMin, bounds.uMax, bounds.vMin, bounds.vMax);
 
             bool found = false;
             AcquireSRWLockShared(&m_viewLock);

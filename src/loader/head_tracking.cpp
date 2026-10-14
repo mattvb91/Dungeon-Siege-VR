@@ -274,7 +274,8 @@ namespace dsvr
             }
         }
 
-        // Left-handed, off-centre perspective (row vectors, z in [0,1]) from view-space edge tangents.
+        // Left-handed perspective (row vectors, z in [0,1]) from view-space edge tangents. Handles off-centre
+        // frusta, though the eye frusta passed in are now symmetric (see FitSymmetricFrustum).
         void OffCentreProjection(const StereoView& v, float nearZ, float farZ, float m[16])
         {
             memset(m, 0, 16 * sizeof(float));
@@ -285,17 +286,6 @@ namespace dsvr
             m[10] = farZ / (farZ - nearZ);
             m[11] = 1.0f;
             m[14] = -nearZ * farZ / (farZ - nearZ);
-        }
-
-        // Culling needs a symmetric frustum that contains the whole (asymmetric) eye frustum.
-        float CullingFov(const StereoView& v)
-        {
-            float t = std::fabs(v.tanLeft);
-            t = std::fmax(t, std::fabs(v.tanRight));
-            t = std::fmax(t, std::fabs(v.tanUp));
-            t = std::fmax(t, std::fabs(v.tanDown));
-            float fov = 2.0f * std::atan(t * 1.1f);
-            return std::fmin(fov, 2.9f);
         }
 
         void* Device(DWORD rapi) { return *reinterpret_cast<void**>(rapi + kRapiDevice); }
@@ -338,8 +328,20 @@ namespace dsvr
                     g_pass.camera = cam;
                     float shifted[9];
                     OrientationMatrix(g_pass.eye, g_pass.target, g_pass.up, shifted);
-                    float cullFov = g_pass.stereo ? CullingFov(g_pass.view) : fov;
-                    g_originalFrustum(camera, edx, width, height, cullFov, nearZ, farZ, &g_pass.eye, shifted);
+                    float eyeFov = fov;
+                    if (g_pass.stereo && height > 0)
+                    {
+                        // Render exactly what the game's frustum describes (horizontal fov + w/h), so its
+                        // culling and mouse picking match the image; the add-on crops to the real eye frustum.
+                        float th, tv;
+                        FitSymmetricFrustum(g_pass.view.tanRight, g_pass.view.tanUp, float(width) / float(height), th, tv);
+                        g_pass.view.tanLeft = -th;
+                        g_pass.view.tanRight = th;
+                        g_pass.view.tanUp = tv;
+                        g_pass.view.tanDown = -tv;
+                        eyeFov = 2.0f * std::atan(th);
+                    }
+                    g_originalFrustum(camera, edx, width, height, eyeFov, nearZ, farZ, &g_pass.eye, shifted);
                     return;
                 }
             }

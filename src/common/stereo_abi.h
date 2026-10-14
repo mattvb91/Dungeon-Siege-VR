@@ -10,9 +10,23 @@ namespace dsvr
         int eye;                // 0 = left, 1 = right
         float headPose[3][4];   // HMD -> seated tracking space (OpenVR, right-handed, metres)
         float eyeToHead[3][4];  // eye -> HMD
-        // View-space tangents of the eye's frustum edges (x right, y up, looking along +z):
+        // View-space tangents of the eye's frustum edges (x right, y up, looking along +z), already
+        // symmetric (tanLeft = -tanRight, tanDown = -tanUp); the loader fits them to the target's aspect.
         float tanLeft, tanRight, tanUp, tanDown;  // tanLeft/tanDown are negative
     };
+
+    // Each eye renders a symmetric frustum with the render target's aspect (square pixels), covering the
+    // eye's real asymmetric frustum; the add-on crops back to the real one when submitting. Symmetric keeps
+    // screen-space UI fusable; the target's aspect lets the game's own frustum (horizontal fov + w/h, used
+    // for culling and mouse picking) match what is drawn exactly. Both DLLs must compute this identically.
+    inline void FitSymmetricFrustum(float tanHalfWidth, float tanHalfHeight, float aspect, float& outHalfWidth, float& outHalfHeight)
+    {
+        float w = tanHalfWidth;
+        if (tanHalfHeight * aspect > w)
+            w = tanHalfHeight * aspect;
+        outHalfWidth = w;
+        outHalfHeight = w / aspect;
+    }
 
     // Marker stamped into the bottom-right corner of each stereo frame by the loader and read back by the
     // add-on after capture, so the eye and pose travel with the image (dgVoodoo may present asynchronously).

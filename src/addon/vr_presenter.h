@@ -74,8 +74,8 @@ namespace dsvr
         bool m_vrReady = false;
         DWORD m_nextVrAttempt = 0;
         vr::VROverlayHandle_t m_overlay = vr::k_ulOverlayHandleInvalid;
-        float m_symTan[2][2] = {};             // per eye: symmetric horizontal / vertical tangent rendered
-        vr::VRTextureBounds_t m_eyeCrop[2] = {}; // per eye: real frustum within the symmetric render
+        float m_rawTan[2][4] = {};  // per eye: real frustum tangents left, right, up, down
+        float m_symTan[2][2] = {};  // per eye: smallest symmetric half-width / half-height covering it
         float m_frameSeconds = 1.0f / 90.0f;
         float m_vsyncToPhotons = 0.0f;
 
