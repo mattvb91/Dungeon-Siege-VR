@@ -82,7 +82,6 @@ namespace dsvr
         void DumpFrame(ID3D11Texture2D* source, const FrameRing::Frame& frame, const char* fileName);
         void SubmitStereo();
         bool ReadMarker(ID3D11Texture2D* source, const FrameRing::Frame& frame, unsigned& frameId, int& eye);
-        int CountKeyPixels(ID3D11Texture2D* source, const FrameRing::Frame& frame);
 
         FrameRing* m_ring = nullptr;
         PresenterSettings m_settings;
@@ -162,7 +161,6 @@ namespace dsvr
         unsigned m_stereoFrames = 0;
         unsigned m_monoFrames = 0;
         unsigned m_staleFrames = 0;
-        unsigned m_misreadFrames = 0;  // eye-marked frames that were really interface frames
         unsigned m_unmarkedInPlay = 0; // unmarked frames amid stereo play (skipped)
         DWORD m_lastMarkedTick = 0;
         char m_lastMarkerCells[96] = {};

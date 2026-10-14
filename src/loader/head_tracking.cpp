@@ -30,11 +30,15 @@ namespace dsvr
         // 0x7A0648 -> 0x4C6E46, thiscall(double), ret 8); UIShell::Draw (0x47A08E) and the cursor follow.
         const DWORD kUiStartCallSite  = 0x00479F27;
         const DWORD kUiStartFunc      = 0x004C6E46;
-        // Mouse cursor for this frame: Rapi cursor object (0x7A0680) 0x656D49(texture, hotspotX, hotspotY),
-        // ret 0Ch; the game passes (0, 0, 0) for no cursor. The cursor is drawn at the very end of the frame,
-        // after the eye frames' world restore, so it must be switched off for eye frames.
-        const DWORD kCursorCallSite   = 0x0047A0E4;
-        const DWORD kCursorFunc       = 0x00656D49;
+        // The mouse cursor is drawn by the Rapi cursor object (0x7A0680) at the very end of the frame, after the
+        // eye frames' world restore. 0x656DC0 thiscall(x, y), ret 8, sets its position (the game calls it from
+        // the cursor update, 0x64DD03). Eye frames move it off-screen. (Switching its texture off with
+        // 0x656D49(0,0,0) instead made it draw now and then without transparency: a pink square.)
+        const DWORD kRapiMousePtr     = 0x007A0680;
+        const DWORD kMouseSetPosFunc  = 0x00656DC0;
+        const DWORD kAppModulePtr     = 0x0079CF7C;
+        const DWORD kAppCursorX       = 0x12C;
+        const DWORD kAppCursorY       = 0x130;
         // Main camera fields that game code reads directly, bypassing the frustum: e.g. terrain picking
         // (0x672701) builds the click-to-move ray from m_fieldOfView, the world position and
         // m_MatrixOrientation. See PublishToCamera.
@@ -83,7 +87,7 @@ namespace dsvr
         typedef void(*GetPanelOrientationFn)(float* yaw, float* pitch);
         typedef void(*SetPointerFn)(float yaw, float pitch, int visible);
         typedef void(__fastcall* UiStartFn)(void* self, void* edx, double time);
-        typedef void(__fastcall* SetCursorFn)(void* self, void* edx, DWORD texture, DWORD hotspotX, DWORD hotspotY);
+        typedef void(__fastcall* MouseSetPosFn)(void* self, void* edx, int x, int y);
         typedef HRESULT(__stdcall* DeviceClearFn)(void* device, DWORD count, const LONG* rects, DWORD flags, DWORD color, float z, DWORD stencil);
         typedef HRESULT(__stdcall* DeviceSetTransformFn)(void* device, DWORD state, const float* matrix);
 
@@ -92,7 +96,7 @@ namespace dsvr
         const SetViewFn g_originalSetView = reinterpret_cast<SetViewFn>(kSetViewFunc);
         const EndFrameFn g_originalEndFrame = reinterpret_cast<EndFrameFn>(kEndFrameFunc);
         const UiStartFn g_originalUiStart = reinterpret_cast<UiStartFn>(kUiStartFunc);
-        const SetCursorFn g_originalSetCursor = reinterpret_cast<SetCursorFn>(kCursorFunc);
+        const MouseSetPosFn g_mouseSetPos = reinterpret_cast<MouseSetPosFn>(kMouseSetPosFunc);
 
         // m_fieldOfView is persistent game state (position and orientation are rebuilt from the SiegePos
         // fields every frame), so remember the original while stereo overrides it.
@@ -665,15 +669,19 @@ namespace dsvr
             g_originalUiStart(self, edx, time);
         }
 
-        // Eye frames show the world only: no mouse cursor (it belongs on the interface panel; drawn into the
-        // wide eye image it appeared as a huge second cursor).
-        void __fastcall HookSetCursor(void* self, void* edx, DWORD texture, DWORD hotspotX, DWORD hotspotY)
+        // Eye frames show the world only: the mouse cursor belongs on the interface panel (drawn into the wide
+        // eye image it appeared as a huge second cursor). Called just before the frame is finished.
+        void PlaceDrawnCursor(int kind)
         {
-            bool eyeFrame = g_frameEye == kFrameLeftEye || g_frameEye == kFrameRightEye;
-            if (eyeFrame && g_settings.interfacePeriod > 0)
-                g_originalSetCursor(self, edx, 0, 0, 0);
+            void* mouse = *reinterpret_cast<void**>(kRapiMousePtr);
+            DWORD app = *reinterpret_cast<const DWORD*>(kAppModulePtr);
+            if (!mouse || !app)
+                return;
+            if (kind == kFrameLeftEye || kind == kFrameRightEye)
+                g_mouseSetPos(mouse, nullptr, -4096, -4096);
             else
-                g_originalSetCursor(self, edx, texture, hotspotX, hotspotY);
+                g_mouseSetPos(mouse, nullptr, *reinterpret_cast<const int*>(app + kAppCursorX),
+                              *reinterpret_cast<const int*>(app + kAppCursorY));
         }
 
         void __fastcall HookEndFrame(void* engine, void* edx, DWORD a, DWORD b)
@@ -685,6 +693,8 @@ namespace dsvr
                 if (g_uiSeparated && g_frameEye != kFrameInterface)
                     g_uiLayer.RestoreWorld(static_cast<IDirect3DDevice7*>(Device(rapi)));
                 g_uiSeparated = false;
+                if (g_settings.interfacePeriod > 0)
+                    PlaceDrawnCursor(g_frameEye);
                 LONG w = *reinterpret_cast<const LONG*>(rapi + kRapiWidth);
                 LONG h = *reinterpret_cast<const LONG*>(rapi + kRapiHeight);
                 LONG cell = LONG(MarkerCellSize(unsigned(w)));
@@ -773,8 +783,6 @@ namespace dsvr
                 PatchCall(kUiStartCallSite, kUiStartFunc, &HookUiStart);
             else
                 g_settings.interfacePeriod = 0;
-            if (g_settings.interfacePeriod > 0 && IsCall(kCursorCallSite, kCursorFunc))
-                PatchCall(kCursorCallSite, kCursorFunc, &HookSetCursor);
             if (g_settings.interfacePeriod > 0)
             {
                 PointerSettings pointer;

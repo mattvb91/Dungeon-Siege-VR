@@ -569,37 +569,6 @@ namespace dsvr
             Log("first frame on overlay (%ux%u)", frame.width, frame.height);
     }
 
-    // An interface frame is mostly the magenta key (loader/ui_layer.h); world frames practically never are.
-    // Samples five points away from the interface's usual places (bars, portraits, corners).
-    // Counts how many of a 3x3 grid of sample points are the magenta interface key (loader/ui_layer.h).
-    // World frames practically never contain it.
-    int VrPresenter::CountKeyPixels(ID3D11Texture2D* source, const FrameRing::Frame& frame)
-    {
-        if (!m_markerStaging || frame.width < 16 || frame.height < 16)
-            return 0;
-        for (int i = 0; i < 9; ++i)
-        {
-            UINT x = UINT((0.2f + 0.3f * float(i % 3)) * frame.width), y = UINT((0.2f + 0.3f * float(i / 3)) * frame.height);
-            D3D11_BOX box = { x, y, 0, x + 1, y + 1, 1 };
-            m_context->CopySubresourceRegion(m_markerStaging.Get(), 0, UINT(i), 0, 0, source, 0, &box);
-        }
-        D3D11_MAPPED_SUBRESOURCE mapped;
-        if (FAILED(m_context->Map(m_markerStaging.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
-            return 0;
-        bool bgra = frame.format == DXGI_FORMAT_B8G8R8A8_UNORM || frame.format == DXGI_FORMAT_B8G8R8X8_UNORM ||
-                    frame.format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
-        int magenta = 0;
-        for (int i = 0; i < 9; ++i)
-        {
-            const BYTE* p = static_cast<const BYTE*>(mapped.pData) + i * 4;
-            int r = bgra ? p[2] : p[0], g = p[1], b = bgra ? p[0] : p[2];
-            if (g < 30 && r > 128 && b > 128 && std::abs(r - b) < 26)
-                ++magenta;
-        }
-        m_context->Unmap(m_markerStaging.Get(), 0);
-        return magenta;
-    }
-
     bool VrPresenter::ReadMarker(ID3D11Texture2D* source, const FrameRing::Frame& frame, unsigned& frameId, int& eye)
     {
         // Cells are 1/256 of the image width (see stereo_abi.h); copy the bottom-right strip holding them.
@@ -672,22 +641,6 @@ namespace dsvr
             {
                 vr::VROverlay()->HideOverlay(m_overlay);
                 m_showingMenu = false;
-            }
-        }
-        else if (marked && CountKeyPixels(shared, frame) > 0)
-        {
-            // An eye frame containing the magenta interface key (user: one-frame pink flash with the cursor in the
-            // headset). Don't show it; record its marker and save the first few so the cause can be found.
-            if (m_misreadFrames++ < 10)
-            {
-                Log("eye %d frame (id %u) contains the interface key - skipped; marker cells: %s",
-                    eye, frameId, m_lastMarkerCells);
-                if (m_misreadFrames <= 3)
-                {
-                    char name[32];
-                    sprintf_s(name, "dsvr_pink_eye_%u.bmp", m_misreadFrames);
-                    DumpFrame(shared, frame, name);
-                }
             }
         }
         else if (marked)
