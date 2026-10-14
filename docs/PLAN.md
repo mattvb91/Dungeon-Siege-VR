@@ -28,7 +28,14 @@ DungeonSiege.exe (D3D7)
 
 ## Milestones
 
-### M0 — Loader skeleton  (code in first commit; builds, not yet tested in-game)
+### M0 — Loader skeleton  ✅ verified 2026-10-14 (launched to main menu, clean exit; log below)
+```
+dsvr attach
+forwarding to C:\WINDOWS\system32\version.dll
+host: ...\DungeonSiege.exe (base 0x00400000, timestamp 0x4D2E4A5A)
+SiegeEngine singleton accessor: 0x0047D93C (expected 0x0047D93C)
+dsvr detach
+```
 - `version.dll` proxy that forwards all exports to the system DLL and writes `dsvr.log`.
 - **Done when:** game launches normally with our DLL in its folder and the log shows attach + exe version.
 
