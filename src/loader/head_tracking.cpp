@@ -93,6 +93,7 @@ namespace dsvr
         {
             DWORD camera;      // 0 = not ours, leave the calls alone
             Vec3 eye;
+            Vec3 center;       // stereo: midpoint between the eyes (head), for the game's frustum
             Vec3 target;
             Vec3 up;
             bool stereo;
@@ -241,7 +242,9 @@ namespace dsvr
             eyePos.x = h[0][0] * e[0][3] + h[0][1] * e[1][3] + h[0][2] * e[2][3] + h[0][3];
             eyePos.y = h[1][0] * e[0][3] + h[1][1] * e[1][3] + h[1][2] * e[2][3] + h[1][3];
             eyePos.z = h[2][0] * e[0][3] + h[2][1] * e[1][3] + h[2][2] * e[2][3] + h[2][3];
-            eyePos = Sub(eyePos, Vec3{ g_baseline[0], g_baseline[1], g_baseline[2] });
+            Vec3 baseline = { g_baseline[0], g_baseline[1], g_baseline[2] };
+            eyePos = Sub(eyePos, baseline);
+            Vec3 headPos = Sub(Vec3{ h[0][3], h[1][3], h[2][3] }, baseline);
 
             // Camera-local (left-handed) eye axes and position: flip z of OpenVR vectors.
             Vec3 localUp      = { rot[0][1], rot[1][1], -rot[2][1] };
@@ -251,6 +254,7 @@ namespace dsvr
             auto toWorld = [&](const Vec3& v) { return Add(Add(Mul(right, v.x), Mul(camUp, v.y)), Mul(forward, v.z)); };
             Vec3 eyeForward = toWorld(localForward);
             pass.eye = Add(pos, Mul(toWorld(localPos), g_settings.scale));
+            pass.center = Add(pos, Mul(toWorld(Vec3{ headPos.x, headPos.y, -headPos.z }), g_settings.scale));
             pass.up = toWorld(localUp);
             pass.target = Add(pass.eye, Mul(eyeForward, distance));
             return true;
@@ -341,7 +345,12 @@ namespace dsvr
                         g_pass.view.tanDown = -tv;
                         eyeFov = 2.0f * std::atan(th);
                     }
-                    g_originalFrustum(camera, edx, width, height, eyeFov, nearZ, farZ, &g_pass.eye, shifted);
+                    // Stereo: the game's frustum also drives mouse picking. The cursor is drawn at the same
+                    // pixel in both eyes (seen at infinity), so pick from between the eyes rather than from
+                    // whichever eye this frame renders. Culling tolerates the half-IPD shift: the rendered
+                    // frustum is wider than the cropped view.
+                    const Vec3* frustumPos = g_pass.stereo ? &g_pass.center : &g_pass.eye;
+                    g_originalFrustum(camera, edx, width, height, eyeFov, nearZ, farZ, frustumPos, shifted);
                     return;
                 }
             }
