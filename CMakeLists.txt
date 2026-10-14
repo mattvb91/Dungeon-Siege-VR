@@ -20,6 +20,8 @@ set(DGVOODOO_API_DIR ${THIRD_PARTY}/dgVoodooAPI)
 # version.dll: loader injected via the exe's VERSION.dll import (engine hooks live here).
 add_library(dsvr_loader SHARED
     src/loader/dllmain.cpp
+    src/loader/camera_probe.cpp
+    src/loader/camera_probe.h
     src/loader/version.def
     src/common/log.h
 )

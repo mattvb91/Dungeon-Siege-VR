@@ -7,6 +7,7 @@
 #include <cstdarg>
 
 #include "common/log.h"
+#include "camera_probe.h"
 
 // ---------------------------------------------------------------------------
 // version.dll forwarding
@@ -103,7 +104,8 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         if (!LoadRealVersionDll())
             return FALSE;
 
-        CheckTargetExe();
+        if (CheckTargetExe())
+            dsvr::StartCameraProbe();
     }
     else if (reason == DLL_PROCESS_DETACH)
     {
