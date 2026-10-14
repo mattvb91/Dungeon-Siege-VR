@@ -26,6 +26,12 @@ namespace dsvr
         const DWORD kAppCaptured   = 0x74;       // byte
         const DWORD kAppCursorShow = 0x78;
         const DWORD kAppButtons    = 0x10C;      // word; 0xF80 = mouse buttons held
+        // The cursor is drawn by the Rapi mouse object's own thread (0x656E02): it copies its position
+        // (+0x114/+0x118), runs the app's cursor update on the copy (vfunc 0x1C -> 0x414642, so GetCursorPos is
+        // called from that thread too), stores the result and draws the cursor there.
+        const DWORD kRapiMousePtr  = 0x007A0680;
+        const DWORD kMousePosX     = 0x114;
+        const DWORD kMousePosY     = 0x118;
         // Mouse sensitivity (floats, set from the options at 0x4130D8): the cursor update multiplies movement
         // by one of these pairs (0x4146EE) before moving the cursor and emitting the movement as input events
         // (which drive UIShell hover/clicks via 0x6E0C74/0x6E0C83 and camera rotation).
@@ -44,6 +50,8 @@ namespace dsvr
 
         PointerSettings g_settings;
         bool g_active = false;
+        DWORD g_mainThread = 0;                       // game thread (calls UpdatePointer)
+        volatile LONG g_hideDrawnCursor = 0;          // current frame is an eye frame
         DWORD g_lastUpdate = 0;                       // UpdatePointer tick; frames without a world camera time out
         bool g_onPanel = true;
         float g_yaw = 0.0f, g_pitch = 0.0f;           // pointer, seated space
@@ -246,8 +254,38 @@ namespace dsvr
         {
             if (!Live() || !pt)
             {
-                RestoreSensitivity();
+                if (GetCurrentThreadId() == g_mainThread)
+                    RestoreSensitivity();
                 return g_realGetCursorPos(pt);
+            }
+
+            if (GetCurrentThreadId() != g_mainThread)
+            {
+                // The cursor-drawing thread updating its own copy: steer that copy onto the game's cursor, or
+                // into the top-right corner (sprite off-screen) while eye frames are being made. (Answering it as
+                // the game thread made a second cursor that moved about twice as far, and stole mouse movement.)
+                DWORD mouse = *reinterpret_cast<const DWORD*>(kRapiMousePtr);
+                if (!mouse)
+                    return g_realGetCursorPos(pt);
+                int drawnX = *reinterpret_cast<const int*>(mouse + kMousePosX);
+                int drawnY = *reinterpret_cast<const int*>(mouse + kMousePosY);
+                POINT want = { AppInt(kAppCursorX), AppInt(kAppCursorY) };
+                if (g_hideDrawnCursor)
+                {
+                    want.x = g_width - 1;
+                    want.y = 0;
+                }
+                POINT q = { drawnX, drawnY };
+                if (RelativeMode())
+                {
+                    q.x = (AppInt(kAppWindowRight) - AppInt(kAppWindowLeft)) / 2;
+                    q.y = (AppInt(kAppWindowBottom) - AppInt(kAppWindowTop)) / 2;
+                }
+                q.x += want.x - drawnX;
+                q.y += want.y - drawnY;
+                ClientToScreen(GameWindow(), &q);
+                *pt = q;
+                return TRUE;
             }
 
             POINT moved = SampleMouse();
@@ -373,6 +411,7 @@ namespace dsvr
     void UpdatePointer(bool active, float panelYaw, float panelPitch, int gameWidth, int gameHeight)
     {
         HWND hwnd = GameWindow();
+        g_mainThread = GetCurrentThreadId();
         if (!active || !hwnd || !g_realGetCursorPos)
         {
             g_active = false;
@@ -415,6 +454,8 @@ namespace dsvr
             ++g_stateLogs;
         }
     }
+
+    void SetDrawnCursorHidden(bool hidden) { InterlockedExchange(&g_hideDrawnCursor, hidden ? 1 : 0); }
 
     bool PointerActive() { return Live(); }
     bool PointerOnPanel() { return g_onPanel; }
