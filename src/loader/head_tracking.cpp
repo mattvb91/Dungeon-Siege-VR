@@ -353,6 +353,7 @@ namespace dsvr
                     float shifted[9];
                     OrientationMatrix(g_pass.eye, g_pass.target, g_pass.up, shifted);
                     float eyeFov = fov;
+                    float pickFov = fov;
                     if (g_pass.stereo && height > 0)
                     {
                         // Render exactly what the game's frustum describes (horizontal fov + w/h), so its
@@ -364,6 +365,9 @@ namespace dsvr
                         g_pass.view.tanUp = tv;
                         g_pass.view.tanDown = -tv;
                         eyeFov = 2.0f * std::atan(th);
+                        // The terrain pick (0x672701) derives its focal length from the viewport *height*
+                        // ((h/2) / tan(fov/2)), i.e. reads the fov as vertical, unlike the projection.
+                        pickFov = 2.0f * std::atan(tv);
                     }
                     // Stereo: the game's frustum also drives mouse picking. The cursor is drawn at the same
                     // pixel in both eyes (seen at infinity), so pick from between the eyes rather than from
@@ -372,7 +376,7 @@ namespace dsvr
                     const Vec3* frustumPos = g_pass.stereo ? &g_pass.center : &g_pass.eye;
                     g_pick.valid = true;
                     g_pick.camera = cam;
-                    g_pick.fov = eyeFov;
+                    g_pick.fov = pickFov;
                     g_pick.pos = *frustumPos;
                     memcpy(g_pick.matrix, shifted, sizeof(shifted));
                     g_originalFrustum(camera, edx, width, height, eyeFov, nearZ, farZ, frustumPos, shifted);
