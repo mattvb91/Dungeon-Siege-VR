@@ -30,6 +30,11 @@ namespace dsvr
         // 0x7A0648 -> 0x4C6E46, thiscall(double), ret 8); UIShell::Draw (0x47A08E) and the cursor follow.
         const DWORD kUiStartCallSite  = 0x00479F27;
         const DWORD kUiStartFunc      = 0x004C6E46;
+        // Mouse cursor for this frame: Rapi cursor object (0x7A0680) 0x656D49(texture, hotspotX, hotspotY),
+        // ret 0Ch; the game passes (0, 0, 0) for no cursor. The cursor is drawn at the very end of the frame,
+        // after the eye frames' world restore, so it must be switched off for eye frames.
+        const DWORD kCursorCallSite   = 0x0047A0E4;
+        const DWORD kCursorFunc       = 0x00656D49;
         // Main camera fields that game code reads directly, bypassing the frustum: e.g. terrain picking
         // (0x672701) builds the click-to-move ray from m_fieldOfView, the world position and
         // m_MatrixOrientation. See PublishToCamera.
@@ -78,6 +83,7 @@ namespace dsvr
         typedef void(*GetPanelOrientationFn)(float* yaw, float* pitch);
         typedef void(*SetPointerFn)(float yaw, float pitch, int visible);
         typedef void(__fastcall* UiStartFn)(void* self, void* edx, double time);
+        typedef void(__fastcall* SetCursorFn)(void* self, void* edx, DWORD texture, DWORD hotspotX, DWORD hotspotY);
         typedef HRESULT(__stdcall* DeviceClearFn)(void* device, DWORD count, const LONG* rects, DWORD flags, DWORD color, float z, DWORD stencil);
         typedef HRESULT(__stdcall* DeviceSetTransformFn)(void* device, DWORD state, const float* matrix);
 
@@ -86,6 +92,7 @@ namespace dsvr
         const SetViewFn g_originalSetView = reinterpret_cast<SetViewFn>(kSetViewFunc);
         const EndFrameFn g_originalEndFrame = reinterpret_cast<EndFrameFn>(kEndFrameFunc);
         const UiStartFn g_originalUiStart = reinterpret_cast<UiStartFn>(kUiStartFunc);
+        const SetCursorFn g_originalSetCursor = reinterpret_cast<SetCursorFn>(kCursorFunc);
 
         // m_fieldOfView is persistent game state (position and orientation are rebuilt from the SiegePos
         // fields every frame), so remember the original while stereo overrides it.
@@ -658,6 +665,17 @@ namespace dsvr
             g_originalUiStart(self, edx, time);
         }
 
+        // Eye frames show the world only: no mouse cursor (it belongs on the interface panel; drawn into the
+        // wide eye image it appeared as a huge second cursor).
+        void __fastcall HookSetCursor(void* self, void* edx, DWORD texture, DWORD hotspotX, DWORD hotspotY)
+        {
+            bool eyeFrame = g_frameEye == kFrameLeftEye || g_frameEye == kFrameRightEye;
+            if (eyeFrame && g_settings.interfacePeriod > 0)
+                g_originalSetCursor(self, edx, 0, 0, 0);
+            else
+                g_originalSetCursor(self, edx, texture, hotspotX, hotspotY);
+        }
+
         void __fastcall HookEndFrame(void* engine, void* edx, DWORD a, DWORD b)
         {
             if (g_frameEye >= 0)
@@ -755,6 +773,8 @@ namespace dsvr
                 PatchCall(kUiStartCallSite, kUiStartFunc, &HookUiStart);
             else
                 g_settings.interfacePeriod = 0;
+            if (g_settings.interfacePeriod > 0 && IsCall(kCursorCallSite, kCursorFunc))
+                PatchCall(kCursorCallSite, kCursorFunc, &HookSetCursor);
             if (g_settings.interfacePeriod > 0)
             {
                 PointerSettings pointer;

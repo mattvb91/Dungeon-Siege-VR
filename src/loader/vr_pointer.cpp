@@ -19,6 +19,10 @@ namespace dsvr
         const DWORD kAppCursorY   = 0x130;       // AppModule::GetCursorY (0x47DD28)
         const DWORD kAppAnchorX   = 0x134;       // client point the movement is measured from
         const DWORD kAppAnchorY   = 0x138;
+        // Mouse sensitivity (floats, set from the options at 0x4130D8): the cursor update multiplies movement
+        // by one of these pairs (0x4146EE) before moving the cursor and emitting the movement as input events
+        // (which drive UIShell hover/clicks via 0x6E0C74/0x6E0C83 and camera rotation).
+        const DWORD kAppSensitivity[4] = { 0x17C, 0x180, 0x188, 0x18C };
         const float kMaxPitch     = 1.48f;       // ~85 degrees
 
         typedef BOOL(WINAPI* GetCursorPosFn)(LPPOINT);
@@ -63,11 +67,38 @@ namespace dsvr
             return app ? *reinterpret_cast<const int*>(app + offset) : 0;
         }
 
-        void SetAppInt(DWORD offset, int value)
+        // The player's sensitivity while the pointer has it set to 1 (see NeutralSensitivity).
+        float g_userSensitivity[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+        bool g_sensitivityNeutral = false;
+
+        // Pointer moves: sensitivity 1, so the movement we report is exactly the movement the cursor makes and
+        // the game emits (other code reads the movement events, e.g. UIShell's hover and clicks).
+        void NeutralSensitivity()
         {
             DWORD app = AppModule();
-            if (app)
-                *reinterpret_cast<int*>(app + offset) = value;
+            if (!app)
+                return;
+            for (int i = 0; i < 4; ++i)
+            {
+                float* s = reinterpret_cast<float*>(app + kAppSensitivity[i]);
+                if (*s != 1.0f)
+                {
+                    g_userSensitivity[i] = *s;  // also picks up changes made in the options meanwhile
+                    *s = 1.0f;
+                }
+            }
+            g_sensitivityNeutral = true;
+        }
+
+        // Middle-drag camera rotation, or pointer inactive: the player's own sensitivity.
+        void RestoreSensitivity()
+        {
+            DWORD app = AppModule();
+            if (!app || !g_sensitivityNeutral)
+                return;
+            for (int i = 0; i < 4; ++i)
+                *reinterpret_cast<float*>(app + kAppSensitivity[i]) = g_userSensitivity[i];
+            g_sensitivityNeutral = false;
         }
 
         struct V3 { float x, y, z; };
@@ -161,30 +192,37 @@ namespace dsvr
         BOOL WINAPI HookGetCursorPos(LPPOINT pt)
         {
             if (!Live() || !pt)
+            {
+                RestoreSensitivity();
                 return g_realGetCursorPos(pt);
+            }
 
             POINT moved = SampleMouse();
             POINT p = { AppInt(kAppAnchorX), AppInt(kAppAnchorY) };
             if (GetAsyncKeyState(VK_MBUTTON) & 0x8000)
             {
-                // Middle-drag rotates the camera from mouse movement: hand the game the real movement and
-                // keep the pointer (and the game's cursor) where they are.
+                // Middle-drag rotates the camera from mouse movement: hand the game the real movement at the
+                // player's sensitivity and keep the pointer where it is.
+                RestoreSensitivity();
                 p.x += moved.x;
                 p.y += moved.y;
             }
             else
             {
-                // Move the pointer, then put the game's cursor exactly on its target and report no movement.
-                // (Steering the cursor with movements overshot: the game scales mouse movement, so its cursor
-                // hit the screen edges, where it edge-rotates the camera.)
+                // Move the pointer, then report exactly the movement that takes the game's cursor onto its
+                // target. With sensitivity 1 the game moves its cursor by that much and emits it as input
+                // events, so the interface's hover and clicks follow. (Writing the cursor directly with zero
+                // movement left UIShell's mouse behind: interface clicks failed. Reporting corrective movement
+                // at the player's sensitivity overshot into the screen edges: edge rotation.)
                 const float kDegToRad = 0.0174532925f;
                 float k = g_settings.degreesPerPixel * kDegToRad;
                 g_yaw -= float(moved.x) * k;
                 g_pitch -= float(moved.y) * k;
                 g_pitch = std::fmax(-kMaxPitch, std::fmin(kMaxPitch, g_pitch));
                 PlaceGameCursor();
-                SetAppInt(kAppCursorX, g_cursorX);
-                SetAppInt(kAppCursorY, g_cursorY);
+                NeutralSensitivity();
+                p.x += g_cursorX - AppInt(kAppCursorX);
+                p.y += g_cursorY - AppInt(kAppCursorY);
             }
             ClientToScreen(GameWindow(), &p);
             *pt = p;
