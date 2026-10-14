@@ -7,6 +7,7 @@
 #include "common/log.h"
 #include "common/stereo_abi.h"
 #include "ui_layer.h"
+#include "vr_pointer.h"
 
 #include <ddraw.h>
 #include <d3d.h>
@@ -75,6 +76,7 @@ namespace dsvr
         typedef bool(*GetHeadPositionFn)(float out[3]);
         typedef bool(*GetStereoViewFn)(unsigned frameId, int eye, StereoView* out);
         typedef void(*GetPanelOrientationFn)(float* yaw, float* pitch);
+        typedef void(*SetPointerFn)(float yaw, float pitch, int visible);
         typedef void(__fastcall* UiStartFn)(void* self, void* edx, double time);
         typedef HRESULT(__stdcall* DeviceClearFn)(void* device, DWORD count, const LONG* rects, DWORD flags, DWORD color, float z, DWORD stencil);
         typedef HRESULT(__stdcall* DeviceSetTransformFn)(void* device, DWORD state, const float* matrix);
@@ -107,6 +109,20 @@ namespace dsvr
         GetHeadPositionFn g_getHeadPosition = nullptr;
         GetStereoViewFn g_getStereoView = nullptr;
         GetPanelOrientationFn g_getPanelOrientation = nullptr;
+        SetPointerFn g_setPointer = nullptr;
+        unsigned g_pointerFrame = ~0u;
+
+        // Click camera of the current frame (stereo with the interface panel), see PublishClickCamera.
+        struct ClickState
+        {
+            bool valid;
+            DWORD camera;
+            Vec3 pos;
+            float matrix[9];
+            int width, height;
+            float nearZ, farZ;
+        };
+        ClickState g_click = {};
         float g_baseline[3] = {};      // head position treated as neutral (Ctrl+recenter)
         bool g_toggleDown = false;
         bool g_recenterDown = false;
@@ -172,6 +188,7 @@ namespace dsvr
             g_getHeadPosition = reinterpret_cast<GetHeadPositionFn>(GetProcAddress(addon, "DsvrGetHeadPosition"));
             g_getStereoView = reinterpret_cast<GetStereoViewFn>(GetProcAddress(addon, "DsvrGetStereoView"));
             g_getPanelOrientation = reinterpret_cast<GetPanelOrientationFn>(GetProcAddress(addon, "DsvrGetPanelOrientation"));
+            g_setPointer = reinterpret_cast<SetPointerFn>(GetProcAddress(addon, "DsvrSetPointer"));
             if (!g_getHeadPosition || !g_getStereoView)
             {
                 g_getHeadPosition = nullptr;
@@ -378,6 +395,59 @@ namespace dsvr
             OrientationMatrix(pos, panelTarget, panelUp, matrix);
         }
 
+        // Camera whose ray through the game's (parked) cursor pixel follows the VR pointer (vr_pointer.h), so
+        // clicks and hover aim wherever the pointer is even off the interface panel.
+        void PointerCamera(const Vec3& pos, const Vec3& target, const Vec3& up, Vec3& outTarget, Vec3& outUp, float matrix[9])
+        {
+            Vec3 right, camUp, forward;
+            float distance;
+            if (!CameraBasis(pos, target, up, right, camUp, forward, distance))
+            {
+                PanelCamera(pos, target, up, outTarget, outUp, matrix);
+                return;
+            }
+            float yaw, pitch;
+            GetPointerDirection(&yaw, &pitch);
+            int cx, cy, w, h;
+            GetGameCursor(&cx, &cy, &w, &h);
+
+            // Camera-local axes: x screen-right, y up, z forward. Pointer direction (OpenVR -> local flips z):
+            float sy = std::sin(yaw), cyw = std::cos(yaw), sp = std::sin(pitch), cp = std::cos(pitch);
+            Vec3 p = { -sy * cp, sp, cyw * cp };
+            // Ray through the cursor pixel for a camera with the panel's horizontal fov and square pixels.
+            float th = std::tan(0.5f * g_settings.hudFov);
+            Vec3 q = { ((float(cx) + 0.5f) / float(w) * 2.0f - 1.0f) * th,
+                       (1.0f - (float(cy) + 0.5f) / float(h) * 2.0f) * th * float(h) / float(w), 1.0f };
+            q = Mul(q, 1.0f / Length(q));
+
+            // Bases looking along p and along q (up ~ +y); the pick camera is B_p * B_q^T, mapping q onto p.
+            auto basis = [](const Vec3& f, Vec3& r, Vec3& u) {
+                r = Cross(Vec3{ 0.0f, 1.0f, 0.0f }, f);
+                float len = Length(r);
+                r = len > 1e-4f ? Mul(r, 1.0f / len) : Vec3{ 1.0f, 0.0f, 0.0f };
+                u = Cross(f, r);
+            };
+            Vec3 r0, u0, rq, uq;
+            basis(p, r0, u0);
+            basis(q, rq, uq);
+            Vec3 localForward = Add(Add(Mul(r0, rq.z), Mul(u0, uq.z)), Mul(p, q.z));
+            Vec3 localUp = Add(Add(Mul(r0, rq.y), Mul(u0, uq.y)), Mul(p, q.y));
+
+            auto toWorld = [&](const Vec3& v) { return Add(Add(Mul(right, v.x), Mul(camUp, v.y)), Mul(forward, v.z)); };
+            outTarget = Add(pos, Mul(toWorld(localForward), distance));
+            outUp = toWorld(localUp);
+            OrientationMatrix(pos, outTarget, outUp, matrix);
+        }
+
+        // Camera the game should aim clicks/hover with this frame (stereo with the interface panel).
+        void ClickCamera(const Vec3& pos, const Vec3& target, const Vec3& up, Vec3& outTarget, Vec3& outUp, float matrix[9])
+        {
+            if (PointerActive() && !PointerOnPanel())
+                PointerCamera(pos, target, up, outTarget, outUp, matrix);
+            else
+                PanelCamera(pos, target, up, outTarget, outUp, matrix);
+        }
+
         void RestoreCameraFov(DWORD cam)
         {
             if (!g_fovOverridden)
@@ -410,6 +480,23 @@ namespace dsvr
             }
         }
 
+        // Publishes the click camera into the camera fields (terrain picking) and remembers it so the frustum
+        // (item hover) can be pointed the same way after the frame is drawn (HookEndFrame).
+        void PublishClickCamera(DWORD cam, const Vec3& origin, const Vec3& target, const Vec3& up,
+                                int width, int height, float nearZ, float farZ)
+        {
+            Vec3 clickTarget, clickUp;
+            ClickCamera(origin, target, up, clickTarget, clickUp, g_click.matrix);
+            g_click.valid = true;
+            g_click.camera = cam;
+            g_click.pos = origin;
+            g_click.width = width;
+            g_click.height = height;
+            g_click.nearZ = nearZ;
+            g_click.farZ = farZ;
+            PublishToCamera(cam, origin, g_click.matrix, true, g_settings.hudFov);
+        }
+
         void __fastcall HookFrustum(void* camera, void* edx, int width, int height, float fov,
                                     float nearZ, float farZ, const Vec3* pos, const float* matrix)
         {
@@ -430,6 +517,21 @@ namespace dsvr
                     // The main menu runs this camera too (target on no node). Leave those frames unmarked so
                     // the add-on shows them on the flat screen.
                     bool inWorld = *reinterpret_cast<const DWORD*>(cam + kTargetNode) != 0;
+                    if (g_pointerFrame != g_frameId)
+                    {
+                        // Once per frame: mouse -> VR pointer, and tell the add-on where to draw it.
+                        g_pointerFrame = g_frameId;
+                        float panelYaw = 0.0f, panelPitch = 0.0f;
+                        if (ConnectAddon() && g_getPanelOrientation)
+                            g_getPanelOrientation(&panelYaw, &panelPitch);
+                        UpdatePointer(inWorld && g_settings.interfacePeriod > 0, panelYaw, panelPitch);
+                        if (g_setPointer)
+                        {
+                            float yaw, pitch;
+                            GetPointerDirection(&yaw, &pitch);
+                            g_setPointer(yaw, pitch, PointerActive() && !PointerOnPanel());
+                        }
+                    }
                     bool panelFrame = inWorld && g_settings.interfacePeriod > 0 && FrameKindFor(g_frameId) == kFrameInterface;
                     if (panelFrame)
                     {
@@ -446,7 +548,7 @@ namespace dsvr
                         g_pass.up = panelUp;
                         Vec3 origin = *pos;
                         g_originalFrustum(camera, edx, width, height, g_settings.hudFov, nearZ, farZ, &origin, panelMatrix);
-                        PublishToCamera(cam, origin, panelMatrix, true, g_settings.hudFov);
+                        PublishClickCamera(cam, origin, target, up, width, height, nearZ, farZ);
                         return;
                     }
                     ok = inWorld && ComputeStereoEye(*pos, target, up, g_pass);
@@ -487,13 +589,10 @@ namespace dsvr
                     g_originalFrustum(camera, edx, width, height, eyeFov, nearZ, farZ, gamePos, shifted);
                     if (g_pass.stereo && g_settings.interfacePeriod > 0)
                     {
-                        // The cursor is seen on the interface panel, which floats around the seated origin (the
-                        // game camera). Clicks are aimed from there through the panel's current direction.
+                        // Clicks are aimed from the seated origin (the game camera) along the VR pointer: through
+                        // the interface panel, or past it.
                         Vec3 original = *pos;
-                        Vec3 panelTarget, panelUp;
-                        float panelMatrix[9];
-                        PanelCamera(original, target, up, panelTarget, panelUp, panelMatrix);
-                        PublishToCamera(cam, original, panelMatrix, true, g_settings.hudFov);
+                        PublishClickCamera(cam, original, target, up, width, height, nearZ, farZ);
                     }
                     else
                     {
@@ -584,6 +683,14 @@ namespace dsvr
                     Log("stereo: first marked frame (id %u, kind %d, target %ldx%ld, cell %ld, Clear 0x%08lX)", g_frameId, g_frameEye, w, h, cell, hr);
                 g_frameEye = -1;
             }
+            // The frame is drawn (culling used the eye frustum); point the camera's frustum along the click
+            // camera so item hover during the next update follows the VR pointer.
+            if (g_click.valid && g_click.camera == MainCamera())
+            {
+                g_originalFrustum(reinterpret_cast<void*>(g_click.camera), nullptr, g_click.width, g_click.height,
+                    g_settings.hudFov, g_click.nearZ, g_click.farZ, &g_click.pos, g_click.matrix);
+            }
+            g_click.valid = false;
             ++g_frameId;
             g_originalEndFrame(engine, edx, a, b);
         }
@@ -648,6 +755,14 @@ namespace dsvr
                 PatchCall(kUiStartCallSite, kUiStartFunc, &HookUiStart);
             else
                 g_settings.interfacePeriod = 0;
+            if (g_settings.interfacePeriod > 0)
+            {
+                PointerSettings pointer;
+                pointer.degreesPerPixel = config.Float("Pointer", "DegreesPerPixel", pointer.degreesPerPixel);
+                pointer.panelWidth = config.Float("Interface", "Width", pointer.panelWidth);
+                pointer.panelDistance = config.Float("Interface", "Distance", pointer.panelDistance);
+                InstallPointer(pointer);
+            }
         }
         else
         {

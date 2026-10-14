@@ -28,6 +28,8 @@ add_library(dsvr_loader SHARED
     src/loader/head_tracking.h
     src/loader/ui_layer.cpp
     src/loader/ui_layer.h
+    src/loader/vr_pointer.cpp
+    src/loader/vr_pointer.h
     src/loader/version.def
     src/common/config.h
     src/common/log.h

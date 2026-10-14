@@ -81,6 +81,7 @@ namespace dsvr
                     WaitForSingleObject(m_ring->NewFrameEvent(), 10);
                 else if (hmd.bPoseIsValid)
                     UpdatePanelFollow(hmd.mDeviceToAbsoluteTracking);
+                UpdatePointerDot();
             }
             else
             {
@@ -184,6 +185,12 @@ namespace dsvr
             vr::VROverlay()->DestroyOverlay(m_hud);
             m_hud = vr::k_ulOverlayHandleInvalid;
             m_hudVisible = false;
+        }
+        if (m_dot != vr::k_ulOverlayHandleInvalid)
+        {
+            vr::VROverlay()->DestroyOverlay(m_dot);
+            m_dot = vr::k_ulOverlayHandleInvalid;
+            m_dotVisible = false;
         }
         AcquireSRWLockExclusive(&m_vrLock);
         m_vrReady = false;
@@ -894,6 +901,90 @@ namespace dsvr
             { -sy, cy * sp, cy * cp, -d * cy * cp },
         } };
         vr::VROverlay()->SetOverlayTransformAbsolute(m_hud, vr::TrackingUniverseSeated, &t);
+    }
+
+    void VrPresenter::SetPointer(float yaw, float pitch, bool visible)
+    {
+        AcquireSRWLockExclusive(&m_pointerLock);
+        m_pointerYaw = yaw;
+        m_pointerPitch = pitch;
+        m_pointerVisible = visible;
+        m_pointerTick = GetTickCount();
+        ReleaseSRWLockExclusive(&m_pointerLock);
+    }
+
+    // Draws the VR pointer as a small ring in seated space, slightly in front of the panel distance.
+    void VrPresenter::UpdatePointerDot()
+    {
+        AcquireSRWLockShared(&m_pointerLock);
+        float yaw = m_pointerYaw, pitch = m_pointerPitch;
+        bool visible = m_pointerVisible && GetTickCount() - m_pointerTick < 250 && !m_showingMenu;
+        ReleaseSRWLockShared(&m_pointerLock);
+
+        vr::IVROverlay* overlay = vr::VROverlay();
+        if (visible && m_dot == vr::k_ulOverlayHandleInvalid && m_device)
+        {
+            if (overlay->CreateOverlay("dsvr.pointer", "Dungeon Siege pointer", &m_dot) != vr::VROverlayError_None)
+            {
+                m_dot = vr::k_ulOverlayHandleInvalid;
+                return;
+            }
+            const int size = 32;
+            static UINT32 pixels[size * size];
+            for (int y = 0; y < size; ++y)
+            {
+                for (int x = 0; x < size; ++x)
+                {
+                    float dx = x + 0.5f - size * 0.5f, dy = y + 0.5f - size * 0.5f;
+                    float r = std::sqrt(dx * dx + dy * dy) / (size * 0.5f);
+                    UINT32 c = 0;
+                    if (r < 0.35f)
+                        c = 0xFFFFFFFF;          // white centre
+                    else if (r < 0.55f)
+                        c = 0xC0000000;          // dark ring for contrast
+                    else if (r < 0.8f)
+                        c = 0xFF40E0FF;          // gold outer ring (ABGR in memory: R=FF G=E0 B=40)
+                    pixels[y * size + x] = c;
+                }
+            }
+            D3D11_TEXTURE2D_DESC desc = {};
+            desc.Width = desc.Height = size;
+            desc.MipLevels = 1;
+            desc.ArraySize = 1;
+            desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            desc.SampleDesc.Count = 1;
+            desc.Usage = D3D11_USAGE_DEFAULT;
+            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            D3D11_SUBRESOURCE_DATA init = { pixels, size * sizeof(UINT32), 0 };
+            if (FAILED(m_device->CreateTexture2D(&desc, &init, &m_dotTex)))
+                return;
+            vr::Texture_t texture = { m_dotTex.Get(), vr::TextureType_DirectX, vr::ColorSpace_Gamma };
+            overlay->SetOverlayTexture(m_dot, &texture);
+            overlay->SetOverlayWidthInMeters(m_dot, 0.03f * m_settings.hudDistance);
+            overlay->SetOverlaySortOrder(m_dot, 10);
+        }
+        if (m_dot == vr::k_ulOverlayHandleInvalid)
+            return;
+
+        if (visible)
+        {
+            float d = m_settings.hudDistance * 0.95f;
+            float sy = std::sin(yaw), cy = std::cos(yaw), sp = std::sin(pitch), cp = std::cos(pitch);
+            vr::HmdMatrix34_t t = { {
+                { cy, sy * sp, sy * cp, -d * sy * cp },
+                { 0.0f, cp, -sp, d * sp },
+                { -sy, cy * sp, cy * cp, -d * cy * cp },
+            } };
+            overlay->SetOverlayTransformAbsolute(m_dot, vr::TrackingUniverseSeated, &t);
+        }
+        if (visible != m_dotVisible)
+        {
+            if (visible)
+                overlay->ShowOverlay(m_dot);
+            else
+                overlay->HideOverlay(m_dot);
+            m_dotVisible = visible;
+        }
     }
 
     void VrPresenter::GetPanelOrientation(float* yaw, float* pitch)

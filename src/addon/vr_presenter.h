@@ -28,7 +28,7 @@ namespace dsvr
         float screenDistance = 2.5f;
         float hudWidth = 1.6f;        // stereo: interface panel, metres (~56 deg at 1.5 m)
         float hudDistance = 1.5f;
-        float hudFollowDegrees = 25.0f;  // panel drifts to the gaze beyond this angle; 0 = stays straight ahead
+        float hudFollowDegrees = 0.0f;   // panel drifts to the gaze beyond this angle; 0 = fixed (the VR pointer reaches past it)
     };
 
     class VrPresenter
@@ -49,6 +49,9 @@ namespace dsvr
 
         // Stereo: current interface panel direction in seated space (radians; yaw about up, then pitch).
         void GetPanelOrientation(float* yaw, float* pitch);
+
+        // Stereo: the loader's mouse-driven VR pointer; a dot is drawn there while it is off the panel.
+        void SetPointer(float yaw, float pitch, bool visible);
 
     private:
         static DWORD WINAPI ThreadMain(void* self);
@@ -75,6 +78,7 @@ namespace dsvr
         void SetHudVisible(bool visible);
         void UpdatePanelFollow(const vr::HmdMatrix34_t& head);
         void PlacePanel();
+        void UpdatePointerDot();
         void DumpFrame(ID3D11Texture2D* source, const FrameRing::Frame& frame, const char* fileName);
         void SubmitStereo();
         bool ReadMarker(ID3D11Texture2D* source, const FrameRing::Frame& frame, unsigned& frameId, int& eye);
@@ -128,6 +132,16 @@ namespace dsvr
         float m_panelPitch = 0.0f;
         bool m_panelFollowing = false;
         DWORD m_lastFollowTick = 0;
+
+        // Pointer dot (written by the game thread through SetPointer, drawn by the VR thread).
+        SRWLOCK m_pointerLock = SRWLOCK_INIT;
+        float m_pointerYaw = 0.0f;
+        float m_pointerPitch = 0.0f;
+        bool m_pointerVisible = false;
+        DWORD m_pointerTick = 0;
+        vr::VROverlayHandle_t m_dot = vr::k_ulOverlayHandleInvalid;
+        bool m_dotVisible = false;
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> m_dotTex;
         Microsoft::WRL::ComPtr<ID3D11VertexShader> m_keyVs;
         Microsoft::WRL::ComPtr<ID3D11PixelShader> m_keyPs;
         Microsoft::WRL::ComPtr<ID3D11SamplerState> m_pointSampler;

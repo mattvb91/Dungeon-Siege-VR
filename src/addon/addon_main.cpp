@@ -272,6 +272,12 @@ extern "C" __declspec(dllexport) bool DsvrGetHeadPosition(float out[3])
     return g_capture && g_capture->Vr().GetHeadPosition(out);
 }
 
+extern "C" __declspec(dllexport) void DsvrSetPointer(float yaw, float pitch, int visible)
+{
+    if (g_capture)
+        g_capture->Vr().SetPointer(yaw, pitch, visible != 0);
+}
+
 extern "C" __declspec(dllexport) void DsvrGetPanelOrientation(float* yaw, float* pitch)
 {
     *yaw = *pitch = 0.0f;
