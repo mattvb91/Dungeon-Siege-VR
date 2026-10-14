@@ -1,0 +1,9 @@
+build/
+out/
+.vs/
+*.user
+*.log
+
+# Third-party downloads are fetched, not committed (see third_party/README.md)
+third_party/*
+!third_party/README.md
