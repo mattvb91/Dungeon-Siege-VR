@@ -56,5 +56,6 @@ namespace dsvr
         Microsoft::WRL::ComPtr<ID3D11Texture2D> m_overlayTex[2];
         int m_nextOverlayTex = 0;
         unsigned m_framesShown = 0;
+        unsigned m_openFailures = 0;
     };
 }

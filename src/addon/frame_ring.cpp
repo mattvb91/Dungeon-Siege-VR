@@ -27,7 +27,9 @@ namespace dsvr
         desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
         // Simultaneous access: no transition barriers needed (implicit promotion/decay from COMMON),
         // which also keeps these textures out of dgVoodoo's resource tracking.
-        desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
+        // Render target: without it D3D11's OpenSharedResource1 rejects the handle with E_INVALIDARG
+        // (verified on RTX 5080 with tools/sharetest).
+        desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
 
         for (int i = 0; i < kSlots; ++i)
         {

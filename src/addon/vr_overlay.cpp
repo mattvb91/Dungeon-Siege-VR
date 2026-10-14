@@ -261,7 +261,8 @@ namespace dsvr
             HRESULT hr = m_device->OpenSharedResource1(frame.sharedHandle, IID_PPV_ARGS(&shared));
             if (FAILED(hr))
             {
-                Log("OpenSharedResource1 failed: 0x%08lX", hr);
+                if (m_openFailures++ < 3)
+                    Log("OpenSharedResource1 failed: 0x%08lX", hr);
                 return;
             }
         }
