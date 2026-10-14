@@ -278,9 +278,13 @@ namespace dsvr
         if (now - g_lastStateLog >= 2000 && g_stateLogs < 60)
         {
             const float kRadToDeg = 57.2957795f;
-            Log("vr pointer: yaw %.1f pitch %.1f deg, %s, game cursor %d,%d, mouse moved %ld,%ld, panel yaw %.1f pitch %.1f",
+            POINT centre = { g_width / 2, g_height / 2 };
+            ClientToScreen(hwnd, &centre);
+            Log("vr pointer: yaw %.1f pitch %.1f deg, %s, game cursor %d,%d, mouse moved %ld,%ld, panel yaw %.1f pitch %.1f, "
+                "recentre to screen %ld,%ld, foreground %s",
                 g_yaw * kRadToDeg, g_pitch * kRadToDeg, g_onPanel ? "on panel" : "OFF panel", g_cursorX, g_cursorY,
-                g_movedX, g_movedY, g_panelYaw * kRadToDeg, g_panelPitch * kRadToDeg);
+                g_movedX, g_movedY, g_panelYaw * kRadToDeg, g_panelPitch * kRadToDeg, centre.x, centre.y,
+                pid == GetCurrentProcessId() ? "game" : "other");
             g_movedX = g_movedY = 0;
             g_lastStateLog = now;
             ++g_stateLogs;

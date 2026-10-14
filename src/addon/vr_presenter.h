@@ -161,6 +161,8 @@ namespace dsvr
         unsigned m_stereoFrames = 0;
         unsigned m_monoFrames = 0;
         unsigned m_staleFrames = 0;
+        unsigned m_waitErrors = 0;     // diagnostic: WaitGetPoses failures since the last stats line
+        int m_lastWaitError = 0;
         DWORD m_lastStatsLog = 0;
     };
 }

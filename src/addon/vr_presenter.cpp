@@ -78,7 +78,11 @@ namespace dsvr
                 vr::TrackedDevicePose_t hmd;
                 vr::EVRCompositorError err = vr::VRCompositor()->WaitGetPoses(&hmd, 1, nullptr, 0);
                 if (err != vr::VRCompositorError_None)
+                {
+                    ++m_waitErrors;
+                    m_lastWaitError = int(err);
                     WaitForSingleObject(m_ring->NewFrameEvent(), 10);
+                }
                 else if (hmd.bPoseIsValid)
                     UpdatePanelFollow(hmd.mDeviceToAbsoluteTracking);
                 UpdatePointerDot();
@@ -113,6 +117,15 @@ namespace dsvr
             {
                 Log("stereo stats: %u stereo, %u mono, %u without pose, %u dropped frames",
                     m_stereoFrames, m_monoFrames, m_staleFrames, m_ring->DroppedFrames());
+                if (m_vrReady)
+                {
+                    // Diagnostic: does SteamVR consider us the scene application?
+                    vr::IVRCompositor* compositor = vr::VRCompositor();
+                    Log("compositor: scene focus pid %u (we are %lu), last renderer pid %u, can render %d, "
+                        "WaitGetPoses errors %u (last %d)", compositor->GetCurrentSceneFocusProcess(), GetCurrentProcessId(),
+                        compositor->GetLastFrameRenderer(), compositor->CanRenderScene() ? 1 : 0, m_waitErrors, m_lastWaitError);
+                    m_waitErrors = 0;
+                }
                 m_lastStatsLog = GetTickCount();
             }
         }
