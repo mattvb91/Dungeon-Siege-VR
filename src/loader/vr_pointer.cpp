@@ -194,6 +194,31 @@ namespace dsvr
             return moved;
         }
 
+        // Diagnostic: follows a few cursor updates end to end. Each line shows the game's cursor when the hook
+        // ran, the client point we meant, the screen point returned, what the game's own ScreenToClient (exe
+        // import, possibly dgVoodoo's) turns that back into, and where the previous update left the cursor.
+        int g_traceLines = 0;
+        int g_tracePrevTargetX = 0, g_tracePrevTargetY = 0;
+        void TraceCursor(int cursorX, int cursorY, POINT client, POINT screen)
+        {
+            if (g_traceLines >= 40 || (g_tracePrevTargetX == client.x && g_tracePrevTargetY == client.y))
+                return;
+            typedef BOOL(WINAPI* ScreenToClientFn)(HWND, LPPOINT);
+            ScreenToClientFn gameScreenToClient = *reinterpret_cast<ScreenToClientFn*>(0x0072041C);
+            POINT back = screen;
+            gameScreenToClient(GameWindow(), &back);
+            Log("cursor trace: game cursor %d,%d (previous request %d,%d), request client %ld,%ld -> screen %ld,%ld -> "
+                "game ScreenToClient %ld,%ld, sensitivity %.3f %.3f %.3f %.3f",
+                cursorX, cursorY, g_tracePrevTargetX, g_tracePrevTargetY, client.x, client.y, screen.x, screen.y,
+                back.x, back.y, *reinterpret_cast<const float*>(AppModule() + kAppSensitivity[0]),
+                *reinterpret_cast<const float*>(AppModule() + kAppSensitivity[1]),
+                *reinterpret_cast<const float*>(AppModule() + kAppSensitivity[2]),
+                *reinterpret_cast<const float*>(AppModule() + kAppSensitivity[3]));
+            g_tracePrevTargetX = client.x;
+            g_tracePrevTargetY = client.y;
+            ++g_traceLines;
+        }
+
         // Called by the game once per frame from its cursor update (0x414675), so the mouse is sampled in
         // step with the game's own input read.
         BOOL WINAPI HookGetCursorPos(LPPOINT pt)
@@ -237,8 +262,10 @@ namespace dsvr
                 p.x = g_cursorX;
                 p.y = g_cursorY;
             }
+            POINT client = p;
             ClientToScreen(GameWindow(), &p);
             *pt = p;
+            TraceCursor(cursorX, cursorY, client, p);
             return TRUE;
         }
 
