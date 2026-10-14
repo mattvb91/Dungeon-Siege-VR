@@ -1,5 +1,7 @@
 # Third-party dependencies (not committed)
 
+Run `.\init.ps1` from the repo root to fetch all of these (each file is SHA-256 verified; `-Force` re-downloads).
+
 | Dependency | Used for | Milestone | Path |
 |---|---|---|---|
 | [OpenVR SDK](https://github.com/ValveSoftware/openvr) v2.15.6 | SteamVR overlay / HMD pose. Only `headers/openvr.h`, `lib/win32/openvr_api.lib`, `bin/win32/openvr_api.{dll,pdb}`, `LICENSE` fetched from the tag via raw.githubusercontent.com | M2 | `third_party/openvr/` |
