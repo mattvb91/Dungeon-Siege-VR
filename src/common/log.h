@@ -12,15 +12,15 @@ namespace dsvr
         return file;
     }
 
-    // Opens dsvr.log next to our DLL (i.e. in the game directory).
-    inline void OpenLog(HMODULE module)
+    // Opens the named log file next to our DLL (i.e. in the game directory).
+    inline void OpenLog(HMODULE module, const char* fileName)
     {
         char path[MAX_PATH];
         DWORD len = GetModuleFileNameA(module, path, MAX_PATH);
         while (len > 0 && path[len - 1] != '\\')
             --len;
         path[len] = '\0';
-        strcat_s(path, "dsvr.log");
+        strcat_s(path, fileName);
         fopen_s(&LogFile(), path, "w");
     }
 

@@ -6,7 +6,7 @@
 #include <cstdio>
 #include <cstdarg>
 
-#include "log.h"
+#include "common/log.h"
 
 // ---------------------------------------------------------------------------
 // version.dll forwarding
@@ -97,7 +97,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
     if (reason == DLL_PROCESS_ATTACH)
     {
         DisableThreadLibraryCalls(module);
-        dsvr::OpenLog(module);
+        dsvr::OpenLog(module, "dsvr.log");
         dsvr::Log("dsvr attach");
 
         if (!LoadRealVersionDll())

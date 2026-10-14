@@ -6,7 +6,9 @@ param(
 )
 
 $files = [ordered]@{
-    "version.dll"   = "$PSScriptRoot\build\$Config\version.dll"
+    "version.dll"     = "$PSScriptRoot\build\$Config\version.dll"
+    "SampleAddon.dll" = "$PSScriptRoot\build\$Config\SampleAddon.dll"
+    "openvr_api.dll"  = "$PSScriptRoot\build\$Config\openvr_api.dll"
     "DDraw.dll"     = "$PSScriptRoot\third_party\dgVoodoo2\MS\x86\DDraw.dll"
     "D3DImm.dll"    = "$PSScriptRoot\third_party\dgVoodoo2\MS\x86\D3DImm.dll"
     "dgVoodoo.conf" = "$PSScriptRoot\deploy\dgVoodoo.conf"
