@@ -27,6 +27,7 @@ namespace dsvr
         const DWORD kEngineRapi      = 0x44;
         const DWORD kCameraPosition  = 0x148;       // world-space eye, recomputed each frame
         const DWORD kTargetPosition  = 0x154;       // world-space target
+        const DWORD kTargetNode      = 0x144;       // m_TargetPosition node guid; 0 = no world loaded (menus)
         const DWORD kCameraUpVector  = 0x160;       // m_UpVector
 
         // Rapi (renderer) fields used by SetPerspective (0x653D06).
@@ -318,7 +319,10 @@ namespace dsvr
                 bool ok;
                 if (g_settings.stereo)
                 {
-                    ok = ComputeStereoEye(*pos, target, up, g_pass);
+                    // The main menu runs this camera too (target on no node). Leave those frames unmarked so
+                    // the add-on shows them on the flat screen.
+                    bool inWorld = *reinterpret_cast<const DWORD*>(cam + kTargetNode) != 0;
+                    ok = inWorld && ComputeStereoEye(*pos, target, up, g_pass);
                     g_pass.stereo = ok;
                 }
                 else

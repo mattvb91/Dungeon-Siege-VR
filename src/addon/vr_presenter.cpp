@@ -2,6 +2,8 @@
 
 #include <dxgi1_2.h>
 
+#include <cmath>
+
 #include "common/log.h"
 
 using Microsoft::WRL::ComPtr;
@@ -138,6 +140,22 @@ namespace dsvr
                 vr::HmdMatrix34_t e = system->GetEyeToHeadTransform(vr::EVREye(eye));
                 Log("  eye %d: raw l %.3f r %.3f t %.3f b %.3f, eye->head offset %.4f %.4f %.4f",
                     eye, l, r, t, b, e.m[0][3], e.m[1][3], e.m[2][3]);
+
+                // Render a symmetric frustum covering the eye's asymmetric one, then crop to it on submit.
+                // The game draws its UI in screen space; with symmetric frusta it lands in the same direction
+                // for both eyes (fusable, at infinity) instead of being shifted by each lens's asymmetry.
+                // Valve's projection math maps pfBottom to the top of the image, pfTop to the bottom.
+                float up = b, down = t;
+                float th = std::fmax(std::fabs(l), std::fabs(r));
+                float tv = std::fmax(std::fabs(up), std::fabs(down));
+                m_symTan[eye][0] = th;
+                m_symTan[eye][1] = tv;
+                m_eyeCrop[eye].uMin = (l + th) / (2.0f * th);
+                m_eyeCrop[eye].uMax = (r + th) / (2.0f * th);
+                m_eyeCrop[eye].vMin = (tv - up) / (2.0f * tv);
+                m_eyeCrop[eye].vMax = (tv - down) / (2.0f * tv);
+                Log("  eye %d: rendering symmetric +-%.3f x +-%.3f, crop u %.3f..%.3f v %.3f..%.3f", eye, th, tv,
+                    m_eyeCrop[eye].uMin, m_eyeCrop[eye].uMax, m_eyeCrop[eye].vMin, m_eyeCrop[eye].vMax);
             }
         }
 
@@ -240,13 +258,11 @@ namespace dsvr
             {
                 CopyMatrix(view.headPose, pose.mDeviceToAbsoluteTracking);
                 CopyMatrix(view.eyeToHead, system->GetEyeToHeadTransform(vr::EVREye(view.eye)));
-                float l, r, t, b;
-                system->GetProjectionRaw(vr::EVREye(view.eye), &l, &r, &t, &b);
-                // Valve's own projection math maps pfBottom to the top of the image (ndc +y), pfTop to the bottom.
-                view.tanLeft = l;
-                view.tanRight = r;
-                view.tanUp = b;
-                view.tanDown = t;
+                // Symmetric frustum; SubmitStereo crops to the real one (see TryInitVr).
+                view.tanLeft = -m_symTan[view.eye][0];
+                view.tanRight = m_symTan[view.eye][0];
+                view.tanUp = m_symTan[view.eye][1];
+                view.tanDown = -m_symTan[view.eye][1];
                 ok = true;
             }
         }
@@ -539,13 +555,17 @@ namespace dsvr
             return;
 
         D3D11_BOX box = { 0, 0, 0, frame.width, frame.height, 1 };
-        vr::VRTextureBounds_t bounds = { 0.0f, 0.0f,
-            float(frame.width) / float(frame.texWidth), float(frame.height) / float(frame.texHeight) };
 
         unsigned frameId;
         int eye;
         if (ReadMarker(shared, frame, frameId, eye))
         {
+            // The image fills frame.width x frame.height of the texture; crop that to the eye's real frustum.
+            float su = float(frame.width) / float(frame.texWidth);
+            float sv = float(frame.height) / float(frame.texHeight);
+            const vr::VRTextureBounds_t& crop = m_eyeCrop[eye];
+            vr::VRTextureBounds_t bounds = { crop.uMin * su, crop.vMin * sv, crop.uMax * su, crop.vMax * sv };
+
             bool found = false;
             AcquireSRWLockShared(&m_viewLock);
             const IssuedView& issued = m_views[frameId % kMarkerFrameIds];
