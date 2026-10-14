@@ -60,6 +60,7 @@ namespace
                 settings.screenDistance = config.Float("Screen", "Distance", settings.screenDistance);
                 settings.hudWidth = config.Float("Interface", "Width", settings.hudWidth);
                 settings.hudDistance = config.Float("Interface", "Distance", settings.hudDistance);
+                settings.hudFollowDegrees = config.Float("Interface", "FollowAngle", settings.hudFollowDegrees);
                 m_mirrorEnabled = settings.stereo;
                 m_vr.Start(&m_ring, settings);
                 m_vrStarted = true;
@@ -269,6 +270,13 @@ extern "C" __declspec(dllexport) void AddOnExit()
 extern "C" __declspec(dllexport) bool DsvrGetHeadPosition(float out[3])
 {
     return g_capture && g_capture->Vr().GetHeadPosition(out);
+}
+
+extern "C" __declspec(dllexport) void DsvrGetPanelOrientation(float* yaw, float* pitch)
+{
+    *yaw = *pitch = 0.0f;
+    if (g_capture)
+        g_capture->Vr().GetPanelOrientation(yaw, pitch);
 }
 
 extern "C" __declspec(dllexport) bool DsvrGetStereoView(unsigned frameId, int eye, dsvr::StereoView* out)

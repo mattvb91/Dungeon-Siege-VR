@@ -74,6 +74,7 @@ namespace dsvr
         typedef void(__fastcall* EndFrameFn)(void* engine, void* edx, DWORD a, DWORD b);
         typedef bool(*GetHeadPositionFn)(float out[3]);
         typedef bool(*GetStereoViewFn)(unsigned frameId, int eye, StereoView* out);
+        typedef void(*GetPanelOrientationFn)(float* yaw, float* pitch);
         typedef void(__fastcall* UiStartFn)(void* self, void* edx, double time);
         typedef HRESULT(__stdcall* DeviceClearFn)(void* device, DWORD count, const LONG* rects, DWORD flags, DWORD color, float z, DWORD stencil);
         typedef HRESULT(__stdcall* DeviceSetTransformFn)(void* device, DWORD state, const float* matrix);
@@ -105,6 +106,7 @@ namespace dsvr
 
         GetHeadPositionFn g_getHeadPosition = nullptr;
         GetStereoViewFn g_getStereoView = nullptr;
+        GetPanelOrientationFn g_getPanelOrientation = nullptr;
         float g_baseline[3] = {};      // head position treated as neutral (Ctrl+recenter)
         bool g_toggleDown = false;
         bool g_recenterDown = false;
@@ -117,6 +119,7 @@ namespace dsvr
             DWORD camera;      // 0 = not ours, leave the calls alone
             Vec3 eye;
             Vec3 center;       // stereo: midpoint between the eyes (head), for the game's frustum
+            bool marked;       // stereo: stamp this frame's kind (eye or interface) at the end of the frame
             Vec3 target;
             Vec3 up;
             bool stereo;
@@ -168,6 +171,7 @@ namespace dsvr
                 return false;
             g_getHeadPosition = reinterpret_cast<GetHeadPositionFn>(GetProcAddress(addon, "DsvrGetHeadPosition"));
             g_getStereoView = reinterpret_cast<GetStereoViewFn>(GetProcAddress(addon, "DsvrGetStereoView"));
+            g_getPanelOrientation = reinterpret_cast<GetPanelOrientationFn>(GetProcAddress(addon, "DsvrGetPanelOrientation"));
             if (!g_getHeadPosition || !g_getStereoView)
             {
                 g_getHeadPosition = nullptr;
@@ -347,6 +351,33 @@ namespace dsvr
         template <typename Fn>
         Fn DeviceMethod(void* device, int slot) { return reinterpret_cast<Fn>((*reinterpret_cast<void***>(device))[slot]); }
 
+        // Camera looking from the seated origin (the game camera) through the centre of the interface panel,
+        // which the add-on lets drift after the player's gaze (yaw about seated up, then pitch).
+        void PanelCamera(const Vec3& pos, const Vec3& target, const Vec3& up, Vec3& panelTarget, Vec3& panelUp, float matrix[9])
+        {
+            float yaw = 0.0f, pitch = 0.0f;
+            if (ConnectAddon() && g_getPanelOrientation)
+                g_getPanelOrientation(&yaw, &pitch);
+
+            Vec3 right, camUp, forward;
+            float distance;
+            if (!CameraBasis(pos, target, up, right, camUp, forward, distance))
+            {
+                panelTarget = target;
+                panelUp = up;
+                OrientationMatrix(pos, target, up, matrix);
+                return;
+            }
+            // OpenVR rotation Ry(yaw) * Rx(pitch), converted to the camera's left-handed local axes.
+            float sy = std::sin(yaw), cy = std::cos(yaw), sp = std::sin(pitch), cp = std::cos(pitch);
+            Vec3 localForward = { -sy * cp, sp, cy * cp };
+            Vec3 localUp = { sy * sp, cp, -cy * sp };
+            auto toWorld = [&](const Vec3& v) { return Add(Add(Mul(right, v.x), Mul(camUp, v.y)), Mul(forward, v.z)); };
+            panelTarget = Add(pos, Mul(toWorld(localForward), distance));
+            panelUp = toWorld(localUp);
+            OrientationMatrix(pos, panelTarget, panelUp, matrix);
+        }
+
         void RestoreCameraFov(DWORD cam)
         {
             if (!g_fovOverridden)
@@ -393,13 +424,34 @@ namespace dsvr
                 const Vec3& up = *reinterpret_cast<const Vec3*>(cam + kCameraUpVector);
 
                 bool ok;
+                g_pass.marked = false;
                 if (g_settings.stereo)
                 {
                     // The main menu runs this camera too (target on no node). Leave those frames unmarked so
                     // the add-on shows them on the flat screen.
                     bool inWorld = *reinterpret_cast<const DWORD*>(cam + kTargetNode) != 0;
+                    bool panelFrame = inWorld && g_settings.interfacePeriod > 0 && FrameKindFor(g_frameId) == kFrameInterface;
+                    if (panelFrame)
+                    {
+                        // Interface frame: render from the panel camera so that interface elements the game
+                        // projects from the world (item labels, names) land over their objects on the panel.
+                        Vec3 panelTarget, panelUp;
+                        float panelMatrix[9];
+                        PanelCamera(*pos, target, up, panelTarget, panelUp, panelMatrix);
+                        g_pass.camera = cam;
+                        g_pass.stereo = false;
+                        g_pass.marked = true;
+                        g_pass.eye = *pos;
+                        g_pass.target = panelTarget;
+                        g_pass.up = panelUp;
+                        Vec3 origin = *pos;
+                        g_originalFrustum(camera, edx, width, height, g_settings.hudFov, nearZ, farZ, &origin, panelMatrix);
+                        PublishToCamera(cam, origin, panelMatrix, true, g_settings.hudFov);
+                        return;
+                    }
                     ok = inWorld && ComputeStereoEye(*pos, target, up, g_pass);
                     g_pass.stereo = ok;
+                    g_pass.marked = ok;
                 }
                 else
                 {
@@ -435,11 +487,13 @@ namespace dsvr
                     g_originalFrustum(camera, edx, width, height, eyeFov, nearZ, farZ, gamePos, shifted);
                     if (g_pass.stereo && g_settings.interfacePeriod > 0)
                     {
-                        // The cursor is seen on the interface panel, fixed straight ahead of the seated origin,
-                        // which is where the game camera is. So the game's own camera, with the panel's angle
-                        // as its fov, aims clicks through the panel. Only the fov needs changing.
+                        // The cursor is seen on the interface panel, which floats around the seated origin (the
+                        // game camera). Clicks are aimed from there through the panel's current direction.
                         Vec3 original = *pos;
-                        PublishToCamera(cam, original, matrix, true, g_settings.hudFov);
+                        Vec3 panelTarget, panelUp;
+                        float panelMatrix[9];
+                        PanelCamera(original, target, up, panelTarget, panelUp, panelMatrix);
+                        PublishToCamera(cam, original, panelMatrix, true, g_settings.hudFov);
                     }
                     else
                     {
@@ -477,15 +531,9 @@ namespace dsvr
             if (g_pass.camera && cam == g_pass.camera && reinterpret_cast<DWORD>(pos) == cam + kCameraPosition)
             {
                 g_pass.camera = 0;
-                if (g_pass.stereo)
-                {
+                if (g_pass.marked)
                     g_frameEye = FrameKindFor(g_frameId);
-                    g_originalSetView(rapi, edx, &g_pass.eye, &g_pass.target, &g_pass.up);
-                }
-                else
-                {
-                    g_originalSetView(rapi, edx, &g_pass.eye, target, up);
-                }
+                g_originalSetView(rapi, edx, &g_pass.eye, &g_pass.target, &g_pass.up);
                 return;
             }
             g_originalSetView(rapi, edx, pos, target, up);

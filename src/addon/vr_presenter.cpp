@@ -75,9 +75,12 @@ namespace dsvr
             if (m_vrReady && m_settings.stereo)
             {
                 // Paces this loop to the headset's refresh and marks the start of a compositor frame.
-                vr::EVRCompositorError err = vr::VRCompositor()->WaitGetPoses(nullptr, 0, nullptr, 0);
+                vr::TrackedDevicePose_t hmd;
+                vr::EVRCompositorError err = vr::VRCompositor()->WaitGetPoses(&hmd, 1, nullptr, 0);
                 if (err != vr::VRCompositorError_None)
                     WaitForSingleObject(m_ring->NewFrameEvent(), 10);
+                else if (hmd.bPoseIsValid)
+                    UpdatePanelFollow(hmd.mDeviceToAbsoluteTracking);
             }
             else
             {
@@ -765,7 +768,7 @@ namespace dsvr
         static const char kShader[] =
             "Texture2D src : register(t0);\n"
             "SamplerState smp : register(s0);\n"
-            "cbuffer C : register(b0) { float2 uvScale; float2 markerStart; };\n"
+            "cbuffer C : register(b0) { float2 uvScale; float2 markerStart; float2 keyUV; float2 pad; };\n"
             "struct V { float4 pos : SV_Position; float2 uv : TEXCOORD0; };\n"
             "V vs(uint id : SV_VertexID) {\n"
             "  V o; float2 t = float2((id << 1) & 2, id & 2);\n"
@@ -773,9 +776,18 @@ namespace dsvr
             "float4 ps(V i) : SV_Target {\n"
             "  if (i.uv.x >= markerStart.x && i.uv.y >= markerStart.y) return 0;\n"
             "  float3 c = src.Sample(smp, i.uv).rgb;\n"
-            // The game's gamma ramp scales the key (255,0,255 arrives as 228,0,228), so test for 'magenta'.
-            "  if (c.g < 0.12 && c.r > 0.5 && c.b > 0.5 && abs(c.r - c.b) < 0.1) return 0;\n"
-            "  return float4(c, 1); }\n";
+            // The key arrives through the game's gamma ramp (255,0,255 -> 228,0,228); measure its level from
+            // the top-left pixel when that is background.
+            "  float3 k = src.Sample(smp, keyUV).rgb;\n"
+            "  float key = (k.g < 0.12 && k.r > 0.5 && k.b > 0.5) ? 0.5 * (k.r + k.b) : 0.894;\n"
+            // Translucent UI pixels were blended over the key by the game: c = a*ui + (1-a)*(key,0,key).
+            // The key has no green, so the 'excess magenta' min(r,b) - g measures (1-a); un-blend to remove
+            // pink fringes. (Genuinely purple UI comes out partly transparent.)
+            "  float spill = saturate((min(c.r, c.b) - c.g) / key);\n"
+            "  float a = 1.0 - spill;\n"
+            "  if (a < 0.04) return 0;\n"
+            "  float3 ui = saturate((c - spill * float3(key, 0, key)) / a);\n"
+            "  return float4(ui, a); }\n";
 
         ComPtr<ID3DBlob> vs, ps, errors;
         HRESULT hr = D3DCompile(kShader, sizeof(kShader) - 1, "dsvr_key", nullptr, nullptr, "vs", "vs_4_0", 0, 0, &vs, &errors);
@@ -795,7 +807,7 @@ namespace dsvr
         sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
         sd.MaxLOD = D3D11_FLOAT32_MAX;
         D3D11_BUFFER_DESC bd = {};
-        bd.ByteWidth = 16;
+        bd.ByteWidth = 32;
         bd.Usage = D3D11_USAGE_DYNAMIC;
         bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
         bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -819,17 +831,77 @@ namespace dsvr
             m_hud = vr::k_ulOverlayHandleInvalid;
             return false;
         }
-        // Fixed in seated space straight ahead (a head-locked panel was hard to read: user feedback). The loader
-        // aims clicks from the seated origin through this panel (head_tracking.cpp, PublishToCamera).
-        vr::HmdMatrix34_t transform = { {
-            { 1.0f, 0.0f, 0.0f, 0.0f },
-            { 0.0f, 1.0f, 0.0f, 0.0f },
-            { 0.0f, 0.0f, 1.0f, -m_settings.hudDistance },
-        } };
         overlay->SetOverlayWidthInMeters(m_hud, m_settings.hudWidth);
-        overlay->SetOverlayTransformAbsolute(m_hud, vr::TrackingUniverseSeated, &transform);
-        Log("interface panel created: %.2f m wide at %.2f m, fixed in seated space", m_settings.hudWidth, m_settings.hudDistance);
+        PlacePanel();
+        Log("interface panel created: %.2f m wide at %.2f m, follows gaze beyond %.0f deg",
+            m_settings.hudWidth, m_settings.hudDistance, m_settings.hudFollowDegrees);
         return true;
+    }
+
+    // The panel sits in seated space around the seated origin (a head-locked panel was hard to read: user
+    // feedback), but drifts after the player's gaze once it is more than hudFollowDegrees away, so the cursor
+    // (which lives on the panel) can reach whatever the player looks at. The loader aims clicks from the
+    // seated origin through the panel's current direction (DsvrGetPanelOrientation).
+    void VrPresenter::UpdatePanelFollow(const vr::HmdMatrix34_t& head)
+    {
+        const float kDegToRad = 0.0174532925f;
+        if (m_settings.hudFollowDegrees <= 0.0f)
+            return;
+
+        DWORD now = GetTickCount();
+        float dt = m_lastFollowTick ? float(now - m_lastFollowTick) * 0.001f : 0.0f;
+        m_lastFollowTick = now;
+
+        // Gaze direction: -z column of the head rotation (OpenVR, right-handed, seated space).
+        float fx = -head.m[0][2], fy = -head.m[1][2], fz = -head.m[2][2];
+        float headYaw = std::atan2(-fx, -fz);
+        float headPitch = std::asin(std::fmax(-1.0f, std::fmin(1.0f, fy)));
+
+        float yaw = m_panelYaw, pitch = m_panelPitch;
+        float dYaw = std::remainder(headYaw - yaw, 2.0f * kPi);
+        float dPitch = headPitch - pitch;
+        float start = m_settings.hudFollowDegrees * kDegToRad;
+        if (std::fabs(dYaw) > start || std::fabs(dPitch) > start)
+            m_panelFollowing = true;
+        if (m_panelFollowing)
+        {
+            float step = std::fmin(1.0f, dt * 4.0f);  // ease in over ~1/4 s
+            yaw += dYaw * step;
+            pitch += dPitch * step;
+            pitch = std::fmax(-50.0f * kDegToRad, std::fmin(40.0f * kDegToRad, pitch));
+            if (std::fabs(dYaw) < 2.0f * kDegToRad && std::fabs(dPitch) < 2.0f * kDegToRad)
+                m_panelFollowing = false;
+            AcquireSRWLockExclusive(&m_panelLock);
+            m_panelYaw = yaw;
+            m_panelPitch = pitch;
+            ReleaseSRWLockExclusive(&m_panelLock);
+            PlacePanel();
+        }
+    }
+
+    void VrPresenter::PlacePanel()
+    {
+        if (m_hud == vr::k_ulOverlayHandleInvalid)
+            return;
+        float yaw, pitch;
+        GetPanelOrientation(&yaw, &pitch);
+        // Rotation Ry(yaw) * Rx(pitch); panel centre at distance d along its -z axis.
+        float sy = std::sin(yaw), cy = std::cos(yaw), sp = std::sin(pitch), cp = std::cos(pitch);
+        float d = m_settings.hudDistance;
+        vr::HmdMatrix34_t t = { {
+            { cy, sy * sp, sy * cp, -d * sy * cp },
+            { 0.0f, cp, -sp, d * sp },
+            { -sy, cy * sp, cy * cp, -d * cy * cp },
+        } };
+        vr::VROverlay()->SetOverlayTransformAbsolute(m_hud, vr::TrackingUniverseSeated, &t);
+    }
+
+    void VrPresenter::GetPanelOrientation(float* yaw, float* pitch)
+    {
+        AcquireSRWLockShared(&m_panelLock);
+        *yaw = m_panelYaw;
+        *pitch = m_panelPitch;
+        ReleaseSRWLockShared(&m_panelLock);
     }
 
     void VrPresenter::SetHudVisible(bool visible)
@@ -878,6 +950,10 @@ namespace dsvr
             float cell = float(frame.width) / float(kMarkerCellDivisor);
             c[2] = (float(frame.width) - (kMarkerCells + 0.5f) * cell) / float(frame.texWidth);
             c[3] = (float(frame.height) - 1.2f * cell) / float(frame.texHeight);
+            // Key level sample: a pixel just inside the top-left corner of the image.
+            c[4] = 2.5f / float(frame.texWidth);
+            c[5] = 2.5f / float(frame.texHeight);
+            c[6] = c[7] = 0.0f;
             m_context->Unmap(m_keyConstants.Get(), 0);
         }
 
