@@ -17,8 +17,15 @@ namespace dsvr
         // cursor with SetCursorPos (0x41592A, 0x416EB4). Its cursor is what it draws and picks with.
         const DWORD kAppCursorX   = 0x12C;       // AppModule::GetCursorX (0x47DD14)
         const DWORD kAppCursorY   = 0x130;       // AppModule::GetCursorY (0x47DD28)
-        const DWORD kAppAnchorX   = 0x134;       // client point the movement is measured from
+        const DWORD kAppAnchorX   = 0x134;       // client point the movement is measured from (relative mode)
         const DWORD kAppAnchorY   = 0x138;
+        const DWORD kAppWindowLeft = 0xC0, kAppWindowTop = 0xC4, kAppWindowRight = 0xC8, kAppWindowBottom = 0xCC;
+        // Inputs of 0x4158F7, which decides relative mode (see RelativeMode).
+        const DWORD kAppFlags48    = 0x48;
+        const DWORD kAppFlags4C    = 0x4C;
+        const DWORD kAppCaptured   = 0x74;       // byte
+        const DWORD kAppCursorShow = 0x78;
+        const DWORD kAppButtons    = 0x10C;      // word; 0xF80 = mouse buttons held
         // Mouse sensitivity (floats, set from the options at 0x4130D8): the cursor update multiplies movement
         // by one of these pairs (0x4146EE) before moving the cursor and emitting the movement as input events
         // (which drive UIShell hover/clicks via 0x6E0C74/0x6E0C83 and camera rotation).
@@ -106,6 +113,20 @@ namespace dsvr
             DWORD app = AppModule();
             if (app)
                 *reinterpret_cast<int*>(app + offset) = value;
+        }
+
+        // Mirror of the test in 0x4158F7: the cursor update measures movement from the window centre.
+        bool RelativeMode()
+        {
+            DWORD app = AppModule();
+            if (!app || *reinterpret_cast<const int*>(app + kAppCursorShow) <= 0)
+                return false;
+            bool captured = *reinterpret_cast<const BYTE*>(app + kAppCaptured) != 0;
+            if (captured && !(*reinterpret_cast<const DWORD*>(app + kAppFlags4C) & 1))
+                return true;
+            if (*reinterpret_cast<const WORD*>(app + kAppButtons) & 0x0F80)
+                return true;
+            return ((*reinterpret_cast<const DWORD*>(app + kAppFlags48) >> 28) & 1) != 0;
         }
 
         struct V3 { float x, y, z; };
@@ -230,14 +251,20 @@ namespace dsvr
             }
 
             POINT moved = SampleMouse();
-            // The cursor update (0x41469C) measures movement from the anchor in relative mode but from the
-            // cursor itself in absolute mode (the menu uses one, gameplay the other). With the anchor set to the
-            // cursor, "cursor + movement" means the same in both. (Using only the anchor made the in-game
-            // cursor jump by the anchor/cursor gap every frame and wrap round the screen edges.)
+            // The cursor update (0x41469C) measures movement from the cursor itself in absolute mode (menus) and
+            // from the window centre in relative mode (gameplay): 0x4158F7 re-centres the anchor to half the
+            // client size before the movement is taken (cursor trace: in-game the cursor moved by "request -
+            // 512,384" every frame). Report the point that gives the wanted movement in the current mode.
             int cursorX = AppInt(kAppCursorX), cursorY = AppInt(kAppCursorY);
-            SetAppInt(kAppAnchorX, cursorX);
-            SetAppInt(kAppAnchorY, cursorY);
-            POINT p = { cursorX, cursorY };
+            POINT origin = { cursorX, cursorY };
+            if (RelativeMode())
+            {
+                origin.x = (AppInt(kAppWindowRight) - AppInt(kAppWindowLeft)) / 2;
+                origin.y = (AppInt(kAppWindowBottom) - AppInt(kAppWindowTop)) / 2;
+                SetAppInt(kAppAnchorX, origin.x);  // what 0x4158F7 sets when it re-centres
+                SetAppInt(kAppAnchorY, origin.y);
+            }
+            POINT p = origin;
             if (GetAsyncKeyState(VK_MBUTTON) & 0x8000)
             {
                 // Middle-drag rotates the camera from mouse movement: hand the game the real movement at the
@@ -259,8 +286,8 @@ namespace dsvr
                 g_pitch = std::fmax(-kMaxPitch, std::fmin(kMaxPitch, g_pitch));
                 PlaceGameCursor();
                 NeutralSensitivity();
-                p.x = g_cursorX;
-                p.y = g_cursorY;
+                p.x += g_cursorX - cursorX;
+                p.y += g_cursorY - cursorY;
             }
             POINT client = p;
             ClientToScreen(GameWindow(), &p);
