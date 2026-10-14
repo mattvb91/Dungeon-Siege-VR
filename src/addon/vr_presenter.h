@@ -21,8 +21,8 @@ namespace dsvr
     struct PresenterSettings
     {
         bool stereo = false;
-        float screenWidth = 3.0f;     // mono overlay, metres
-        float screenDistance = 2.2f;  // mono overlay, metres
+        float screenWidth = 2.0f;     // overlay screen (mono mode, stereo menus), metres: ~44 deg at 2.5 m
+        float screenDistance = 2.5f;
     };
 
     class VrPresenter

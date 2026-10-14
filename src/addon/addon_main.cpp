@@ -55,8 +55,8 @@ namespace
                 Config config(g_module);
                 PresenterSettings settings;
                 settings.stereo = config.Bool("Stereo", "Enabled", false);
-                settings.screenWidth = config.Float("Screen", "Width", 3.0f);
-                settings.screenDistance = config.Float("Screen", "Distance", 2.2f);
+                settings.screenWidth = config.Float("Screen", "Width", settings.screenWidth);
+                settings.screenDistance = config.Float("Screen", "Distance", settings.screenDistance);
                 m_vr.Start(&m_ring, settings);
                 m_vrStarted = true;
             }
