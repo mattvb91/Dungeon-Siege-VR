@@ -11,6 +11,7 @@
 #include "Addon/IAddonMainCallback.hpp"
 #include "Addon/ID3D12RootObserver.hpp"
 
+#include "common/config.h"
 #include "common/log.h"
 #include "frame_ring.h"
 #include "vr_overlay.h"
@@ -18,6 +19,8 @@
 namespace
 {
     using namespace dsvr;
+
+    HMODULE g_module = nullptr;
 
     // Our copy textures must have a concrete format so D3D11 and SteamVR can use them.
     DXGI_FORMAT TypedFormat(DXGI_FORMAT format)
@@ -49,7 +52,8 @@ namespace
             m_host = host;
             if (!m_vrStarted)
             {
-                m_vr.Start(&m_ring);
+                Config config(g_module);
+                m_vr.Start(&m_ring, config.Float("Screen", "Width", 3.0f), config.Float("Screen", "Distance", 2.2f));
                 m_vrStarted = true;
             }
             return true;
@@ -247,6 +251,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
 {
     if (reason == DLL_PROCESS_ATTACH)
     {
+        g_module = module;
         DisableThreadLibraryCalls(module);
         dsvr::OpenLog(module, "dsvr_vr.log");
         Log("dsvr addon attach");

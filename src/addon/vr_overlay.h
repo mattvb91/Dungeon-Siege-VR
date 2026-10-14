@@ -17,7 +17,8 @@ namespace dsvr
     class VrOverlay
     {
     public:
-        void Start(FrameRing* ring);
+        // Screen placement in the seated tracking space (metres).
+        void Start(FrameRing* ring, float screenWidth, float screenDistance);
 
         // LUID of the GPU dgVoodoo renders on; our D3D11 device must live on the same one.
         void SetAdapterLuid(LUID luid);
@@ -40,6 +41,8 @@ namespace dsvr
         void PresentFrame(FrameRing::Frame& frame);
 
         FrameRing* m_ring = nullptr;
+        float m_screenWidth = 3.0f;
+        float m_screenDistance = 2.2f;
 
         CRITICAL_SECTION m_luidLock;
         LUID m_luid = {};

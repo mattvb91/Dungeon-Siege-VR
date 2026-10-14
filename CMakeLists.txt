@@ -27,6 +27,7 @@ add_library(dsvr_loader SHARED
     src/loader/head_tracking.cpp
     src/loader/head_tracking.h
     src/loader/version.def
+    src/common/config.h
     src/common/log.h
 )
 set_target_properties(dsvr_loader PROPERTIES OUTPUT_NAME version)

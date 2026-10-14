@@ -10,9 +10,6 @@ namespace dsvr
 {
     namespace
     {
-        // Screen placement in the seated tracking space (metres).
-        const float kScreenWidth = 3.0f;
-        const float kScreenDistance = 2.2f;
         const float kPi = 3.14159265f;
 
         const DWORD kVrRetryMs = 3000;
@@ -20,9 +17,11 @@ namespace dsvr
         bool SameLuid(const LUID& a, const LUID& b) { return a.LowPart == b.LowPart && a.HighPart == b.HighPart; }
     }
 
-    void VrOverlay::Start(FrameRing* ring)
+    void VrOverlay::Start(FrameRing* ring, float screenWidth, float screenDistance)
     {
         m_ring = ring;
+        m_screenWidth = screenWidth;
+        m_screenDistance = screenDistance;
         InitializeCriticalSection(&m_luidLock);
         m_fenceEvent = CreateEventA(nullptr, FALSE, FALSE, nullptr);
         HANDLE thread = CreateThread(nullptr, 0, &VrOverlay::ThreadMain, this, 0, nullptr);
@@ -234,13 +233,13 @@ namespace dsvr
         vr::HmdMatrix34_t transform = { {
             { 1.0f, 0.0f, 0.0f, 0.0f },
             { 0.0f, 1.0f, 0.0f, 0.0f },
-            { 0.0f, 0.0f, 1.0f, -kScreenDistance },
+            { 0.0f, 0.0f, 1.0f, -m_screenDistance },
         } };
-        overlay->SetOverlayWidthInMeters(m_overlay, kScreenWidth);
-        overlay->SetOverlayCurvature(m_overlay, kScreenWidth / (2.0f * kPi * kScreenDistance));
+        overlay->SetOverlayWidthInMeters(m_overlay, m_screenWidth);
+        overlay->SetOverlayCurvature(m_overlay, m_screenWidth / (2.0f * kPi * m_screenDistance));
         overlay->SetOverlayTransformAbsolute(m_overlay, vr::TrackingUniverseSeated, &transform);
         overlay->ShowOverlay(m_overlay);
-        Log("overlay created: %.1f m wide at %.1f m", kScreenWidth, kScreenDistance);
+        Log("overlay created: %.1f m wide at %.1f m", m_screenWidth, m_screenDistance);
         return true;
     }
 

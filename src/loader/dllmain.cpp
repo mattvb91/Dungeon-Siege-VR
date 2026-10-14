@@ -107,7 +107,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
 
         if (CheckTargetExe())
         {
-            dsvr::InstallHeadTracking();
+            dsvr::InstallHeadTracking(module);
             dsvr::StartCameraProbe();
         }
     }
