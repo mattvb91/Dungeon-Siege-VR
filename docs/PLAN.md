@@ -101,8 +101,22 @@ Lessons:
   +0x178), so the VR view is left in them for the rest of each frame (fov restored when off).
 
 Open:
-- In-game UI is drawn into each eye: too big and cropped differently per eye at the edges. Plan: separate UI
-  frames (3D cleared to a key colour) shown on the overlay screen; eye frames drawn without UI.
+- ✅ Interface panel + VR pointer (verified 2026-10-14: interface readable, clicks on the panel and in the world,
+  middle-drag rotation normal, camera steady).
+  - Every 7th frame ([Interface] Period) is an interface frame: back buffer cleared to magenta at 0x479F27,
+    keyed (despill, gamma-tolerant) onto a panel fixed in seated space. Eye frames save the back buffer there
+    and restore it before presenting; the cursor is switched off in eye frames (0x47A0E4 → 0x656D49(0,0,0)).
+  - Frame marker v2: four on/off cells at the bottom-right (the captured image carries the game's gamma ramp).
+  - Monitor mirror shows left-eye frames only (no flicker).
+  - Mouse → VR pointer (vr_pointer.cpp): exe imports GetCursorPos/SetCursorPos/PeekMessageA/GetMessageA
+    redirected. On the panel the game cursor sits on the hit pixel; off it the cursor is parked at (0.5, 0.3)
+    (hidden on the panel) and the click camera is turned so its ray follows the pointer; a ring marks it.
+  - Mouse lessons: dgVoodoo virtualises the game's mouse into the game resolution (window may be 3840x2160);
+    the game runs its own cursor (AppModule+0x12C/+0x130) from reported movement, measured from the window
+    centre in relative mode (gameplay; 0x4158F7 re-centres) and from the cursor in absolute mode (menus).
+    The interface (UIShell+0x78/+0x7C) only follows movement events, so the cursor must be moved by reported
+    movement, never written directly. Middle button held → real movement passes through for camera rotation.
+- Interface on the monitor preview (requested): composite the last interface frame over the left-eye mirror.
 - ✅ Resolution (2026-10-14): dgVoodoo `[DirectX] Resolution = 4x`. With the game set to 1024x768 the eyes
   render 4096x3072 (ideal for the Index ≈ 2990x2240, so `3x` = 3072x2304 also suffices); still a steady 180 fps
   (≈1795 stereo frames / 10 s), user reports it sharp and smooth.
