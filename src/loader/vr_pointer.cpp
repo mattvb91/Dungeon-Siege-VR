@@ -32,30 +32,17 @@ namespace dsvr
         float g_panelYaw = 0.0f, g_panelPitch = 0.0f;
         int g_cursorX = 0, g_cursorY = 0;             // game cursor, game pixels
         int g_width = 1024, g_height = 768;           // game render size (the image shown on the panel)
-        int g_clientWidth = 1024, g_clientHeight = 768;
         LONG g_movedX = 0, g_movedY = 0;              // diagnostic: real mouse movement since the last log
         DWORD g_lastStateLog = 0;
         int g_stateLogs = 0;
 
-        // dgVoodoo scales the game image into the window keeping its aspect (centred, bars on the sides), so
-        // window (client) pixels and game pixels differ, e.g. 3840x2160 vs 1024x768. Same size = identity.
-        void GameToClient(int gx, int gy, int& cx, int& cy)
-        {
-            float scale = std::fmin(float(g_clientWidth) / float(g_width), float(g_clientHeight) / float(g_height));
-            float offX = 0.5f * (float(g_clientWidth) - scale * float(g_width));
-            float offY = 0.5f * (float(g_clientHeight) - scale * float(g_height));
-            cx = int(offX + (float(gx) + 0.5f) * scale);
-            cy = int(offY + (float(gy) + 0.5f) * scale);
-        }
-
-        void ClientToGame(int cx, int cy, int& gx, int& gy)
-        {
-            float scale = std::fmin(float(g_clientWidth) / float(g_width), float(g_clientHeight) / float(g_height));
-            float offX = 0.5f * (float(g_clientWidth) - scale * float(g_width));
-            float offY = 0.5f * (float(g_clientHeight) - scale * float(g_height));
-            gx = int((float(cx) - offX) / scale);
-            gy = int((float(cy) - offY) / scale);
-        }
+        // Cursor coordinates: dgVoodoo virtualises the mouse for the game, so GetCursorPos / SetCursorPos /
+        // ClientToScreen / mouse messages all work in the game's own resolution even when the real window is
+        // larger (log: game 1024x768 in a 3840x2160 client). Window sizes from GetClientRect are NOT in that
+        // space (using them sent the cursor off the virtual screen: the camera edge-rotated). So client pixels
+        // are game pixels here.
+        void GameToClient(int gx, int gy, int& cx, int& cy) { cx = gx; cy = gy; }
+        void ClientToGame(int cx, int cy, int& gx, int& gy) { gx = cx; gy = cy; }
 
         HWND GameWindow()
         {
@@ -246,13 +233,6 @@ namespace dsvr
             return;
         }
 
-        RECT client;
-        GetClientRect(hwnd, &client);
-        if (client.right > 0 && client.bottom > 0)
-        {
-            g_clientWidth = client.right;
-            g_clientHeight = client.bottom;
-        }
         if (gameWidth > 0 && gameHeight > 0)
         {
             g_width = gameWidth;
@@ -268,7 +248,7 @@ namespace dsvr
             g_yaw = panelYaw;
             g_pitch = panelPitch;
             g_active = true;
-            Log("vr pointer: active (game %dx%d in client %dx%d)", g_width, g_height, g_clientWidth, g_clientHeight);
+            Log("vr pointer: active (game %dx%d)", g_width, g_height);
         }
 
         // Mouse movement turns the pointer; the real cursor is held at the window centre.
@@ -276,7 +256,7 @@ namespace dsvr
         GetWindowThreadProcessId(GetForegroundWindow(), &pid);
         if (pid == GetCurrentProcessId())
         {
-            POINT centre = { g_clientWidth / 2, g_clientHeight / 2 };
+            POINT centre = { g_width / 2, g_height / 2 };
             ClientToScreen(hwnd, &centre);
             POINT real;
             if (g_realGetCursorPos(&real))
