@@ -33,6 +33,9 @@ namespace dsvr
         int g_cursorX = 0, g_cursorY = 0;             // game cursor, game pixels
         int g_width = 1024, g_height = 768;           // game render size (the image shown on the panel)
         int g_clientWidth = 1024, g_clientHeight = 768;
+        LONG g_movedX = 0, g_movedY = 0;              // diagnostic: real mouse movement since the last log
+        DWORD g_lastStateLog = 0;
+        int g_stateLogs = 0;
 
         // dgVoodoo scales the game image into the window keeping its aspect (centred, bars on the sides), so
         // window (client) pixels and game pixels differ, e.g. 3840x2160 vs 1024x768. Same size = identity.
@@ -280,6 +283,8 @@ namespace dsvr
             {
                 const float kDegToRad = 0.0174532925f;
                 float k = g_settings.degreesPerPixel * kDegToRad;
+                g_movedX += real.x - centre.x;
+                g_movedY += real.y - centre.y;
                 g_yaw -= float(real.x - centre.x) * k;
                 g_pitch -= float(real.y - centre.y) * k;
                 g_pitch = std::fmax(-kMaxPitch, std::fmin(kMaxPitch, g_pitch));
@@ -287,6 +292,19 @@ namespace dsvr
             }
         }
         PlaceGameCursor();
+
+        // Diagnostic: pointer state every 2 s for the first two minutes of each session.
+        DWORD now = GetTickCount();
+        if (now - g_lastStateLog >= 2000 && g_stateLogs < 60)
+        {
+            const float kRadToDeg = 57.2957795f;
+            Log("vr pointer: yaw %.1f pitch %.1f deg, %s, game cursor %d,%d, mouse moved %ld,%ld, panel yaw %.1f pitch %.1f",
+                g_yaw * kRadToDeg, g_pitch * kRadToDeg, g_onPanel ? "on panel" : "OFF panel", g_cursorX, g_cursorY,
+                g_movedX, g_movedY, g_panelYaw * kRadToDeg, g_panelPitch * kRadToDeg);
+            g_movedX = g_movedY = 0;
+            g_lastStateLog = now;
+            ++g_stateLogs;
+        }
     }
 
     bool PointerActive() { return Live(); }
