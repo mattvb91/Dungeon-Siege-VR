@@ -21,6 +21,13 @@ namespace dsvr
         // Last call of a rendered frame in TattooGame's frame function 0x4799B1, after the UI.
         const DWORD kEndFrameCallSite = 0x0047A0F9; // -> engine 0x662CA5 thiscall(engine; a, b), ret 8 -> Rapi 0x650F13
         const DWORD kEndFrameFunc     = 0x00662CA5;
+        // Terrain mouse picking (engine+0x48 object, thiscall(float, float), ret 8). It builds the cursor ray
+        // from the main camera's own m_fieldOfView (+0x124), world position (+0x148) and m_MatrixOrientation
+        // (+0x178) instead of the frustum, so item hover was right but click-to-move was not.
+        const DWORD kPickCallSites[] = { 0x00479E88, 0x00479F88 };
+        const DWORD kPickFunc         = 0x00672701;
+        const DWORD kCameraFov        = 0x124;
+        const DWORD kCameraMatrix     = 0x178;
 
         const DWORD kSiegeEnginePtr  = 0x007A05FC;
         const DWORD kEngineCamera    = 0x3C;
@@ -59,6 +66,7 @@ namespace dsvr
         typedef void(__fastcall* PerspectiveFn)(void* rapi, void* edx, float fov, float nearZ, float farZ);
         typedef void(__fastcall* SetViewFn)(void* rapi, void* edx, const Vec3* pos, const Vec3* target, const Vec3* up);
         typedef void(__fastcall* EndFrameFn)(void* engine, void* edx, DWORD a, DWORD b);
+        typedef void(__fastcall* PickFn)(void* self, void* edx, float a, float b);
         typedef bool(*GetHeadPositionFn)(float out[3]);
         typedef bool(*GetStereoViewFn)(unsigned frameId, StereoView* out);
         typedef HRESULT(__stdcall* DeviceClearFn)(void* device, DWORD count, const LONG* rects, DWORD flags, DWORD color, float z, DWORD stencil);
@@ -68,6 +76,18 @@ namespace dsvr
         const PerspectiveFn g_originalPerspective = reinterpret_cast<PerspectiveFn>(kPerspFunc);
         const SetViewFn g_originalSetView = reinterpret_cast<SetViewFn>(kSetViewFunc);
         const EndFrameFn g_originalEndFrame = reinterpret_cast<EndFrameFn>(kEndFrameFunc);
+        const PickFn g_originalPick = reinterpret_cast<PickFn>(kPickFunc);
+
+        // Camera the terrain pick should use this frame: what the frustum hook gave the game's frustum.
+        struct PickCamera
+        {
+            bool valid;
+            DWORD camera;
+            float fov;
+            Vec3 pos;
+            float matrix[9];
+        };
+        PickCamera g_pick = {};
 
         struct Settings
         {
@@ -350,10 +370,17 @@ namespace dsvr
                     // whichever eye this frame renders. Culling tolerates the half-IPD shift: the rendered
                     // frustum is wider than the cropped view.
                     const Vec3* frustumPos = g_pass.stereo ? &g_pass.center : &g_pass.eye;
+                    g_pick.valid = true;
+                    g_pick.camera = cam;
+                    g_pick.fov = eyeFov;
+                    g_pick.pos = *frustumPos;
+                    memcpy(g_pick.matrix, shifted, sizeof(shifted));
                     g_originalFrustum(camera, edx, width, height, eyeFov, nearZ, farZ, frustumPos, shifted);
                     return;
                 }
             }
+            if (mainCamera)
+                g_pick.valid = false;
             g_originalFrustum(camera, edx, width, height, fov, nearZ, farZ, pos, matrix);
         }
 
@@ -415,6 +442,33 @@ namespace dsvr
             g_originalEndFrame(engine, edx, a, b);
         }
 
+        // Runs the terrain pick with the camera fields temporarily set to this frame's pick camera.
+        void __fastcall HookPick(void* self, void* edx, float a, float b)
+        {
+            DWORD cam = g_pick.valid ? MainCamera() : 0;
+            if (!cam || cam != g_pick.camera)
+            {
+                g_originalPick(self, edx, a, b);
+                return;
+            }
+
+            BYTE* c = reinterpret_cast<BYTE*>(cam);
+            float savedFov;
+            Vec3 savedPos;
+            float savedMatrix[9];
+            memcpy(&savedFov, c + kCameraFov, sizeof(savedFov));
+            memcpy(&savedPos, c + kCameraPosition, sizeof(savedPos));
+            memcpy(savedMatrix, c + kCameraMatrix, sizeof(savedMatrix));
+
+            memcpy(c + kCameraFov, &g_pick.fov, sizeof(float));
+            memcpy(c + kCameraPosition, &g_pick.pos, sizeof(Vec3));
+            memcpy(c + kCameraMatrix, g_pick.matrix, sizeof(g_pick.matrix));
+            g_originalPick(self, edx, a, b);
+            memcpy(c + kCameraFov, &savedFov, sizeof(savedFov));
+            memcpy(c + kCameraPosition, &savedPos, sizeof(savedPos));
+            memcpy(c + kCameraMatrix, savedMatrix, sizeof(savedMatrix));
+        }
+
         bool PatchCall(DWORD site, DWORD expectedTarget, const void* hook)
         {
             BYTE* p = reinterpret_cast<BYTE*>(site);
@@ -456,13 +510,16 @@ namespace dsvr
 
         // Verify every site before touching any.
         if (!IsCall(kFrustumCallSite, kFrustumFunc) || !IsCall(kPerspCallSite, kPerspFunc) ||
-            !IsCall(kSetViewCallSite, kSetViewFunc) || !IsCall(kEndFrameCallSite, kEndFrameFunc))
+            !IsCall(kSetViewCallSite, kSetViewFunc) || !IsCall(kEndFrameCallSite, kEndFrameFunc) ||
+            !IsCall(kPickCallSites[0], kPickFunc) || !IsCall(kPickCallSites[1], kPickFunc))
         {
             Log("head tracking: call sites not as expected, not patching");
             return false;
         }
         PatchCall(kFrustumCallSite, kFrustumFunc, &HookFrustum);
         PatchCall(kSetViewCallSite, kSetViewFunc, &HookSetView);
+        for (DWORD site : kPickCallSites)
+            PatchCall(site, kPickFunc, &HookPick);
         if (g_settings.stereo)
         {
             PatchCall(kPerspCallSite, kPerspFunc, &HookPerspective);
