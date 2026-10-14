@@ -103,7 +103,9 @@ Lessons:
 Open:
 - In-game UI is drawn into each eye: too big and cropped differently per eye at the edges. Plan: separate UI
   frames (3D cleared to a key colour) shown on the overlay screen; eye frames drawn without UI.
-- Render resolution is still the game's 800x600 per eye.
+- ✅ Resolution (2026-10-14): dgVoodoo `[DirectX] Resolution = 4x`. With the game set to 1024x768 the eyes
+  render 4096x3072 (ideal for the Index ≈ 2990x2240, so `3x` = 3072x2304 also suffices); still a steady 180 fps
+  (≈1795 stereo frames / 10 s), user reports it sharp and smooth.
 - **Done when:** correct stereo depth with UI legible, ≥ 90 fps per eye on the target PC.
 
 ### M5 — Controls & polish
